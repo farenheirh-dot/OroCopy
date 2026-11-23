@@ -13,6 +13,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // contexts. Ignore them here so START_CAPTURE is not forwarded recursively.
   if (message?.target === "offscreen") return;
 
+  if (message?.type === "CAPTURE_STATE" && message.patch && typeof message.patch === "object") {
+    const patch = {};
+    for (const key of ["running", "lastError", "lastFrameAt"]) {
+      if (Object.prototype.hasOwnProperty.call(message.patch, key)) patch[key] = message.patch[key];
+    }
+    chrome.storage.local.set(patch);
+    return;
+  }
+
   if (message?.type === "REGION_SELECTED") {
     chrome.storage.local.set({ crop: message.crop, cropTabId: _sender.tab?.id,
                                cropTabTitle: message.title || "Pestaña capturada" });

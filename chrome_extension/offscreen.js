@@ -6,6 +6,10 @@ let crop = null;
 const video = document.getElementById("capture");
 const canvas = document.getElementById("frame");
 
+function reportState(patch) {
+  chrome.runtime.sendMessage({ type: "CAPTURE_STATE", patch }).catch(() => {});
+}
+
 async function stopCapture() {
   if (timer !== null) clearInterval(timer);
   timer = null;
@@ -13,7 +17,7 @@ async function stopCapture() {
   stream = null;
   video.srcObject = null;
   sending = false;
-  await chrome.storage.local.set({ running: false });
+  reportState({ running: false });
 }
 
 async function sendFrame(endpoint, token) {
@@ -40,9 +44,9 @@ async function sendFrame(endpoint, token) {
       cache: "no-store"
     });
     if (!response.ok) throw new Error(`OroCopy respondió ${response.status}`);
-    await chrome.storage.local.set({ lastError: "", lastFrameAt: Date.now() });
+    reportState({ lastError: "", lastFrameAt: Date.now() });
   } catch (error) {
-    await chrome.storage.local.set({ lastError: String(error), running: false });
+    reportState({ lastError: String(error), running: false });
     await stopCapture();
   } finally {
     sending = false;
@@ -75,7 +79,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         video.srcObject = stream;
         await video.play();
         timer = setInterval(() => sendFrame(message.endpoint, message.token), 650);
-        await chrome.storage.local.set({ running: true, lastError: "" });
+        reportState({ running: true, lastError: "" });
         sendResponse({ ok: true });
       } catch (error) {
         await stopCapture();
