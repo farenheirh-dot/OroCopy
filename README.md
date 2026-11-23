@@ -48,7 +48,7 @@ El panel no se abre solo: inicia en segundo plano y espera `Ctrl+Alt+G`. No se i
 
 - Inicia OroCopy y pulsa `Ctrl+Alt+O` (o selecciona `Lector de TikTok` desde el menú del icono en la bandeja). El lector inicia el dashboard si aún no estaba abierto.
 - Pulsa `Seleccionar zona` y arrastra un rectángulo que incluya los rótulos `COMPRAS` y `VENTAS` y sus cantidades. La zona se guarda para la próxima ejecución.
-- Pulsa `Iniciar lectura`. La ventana compacta muestra la zona y los conteos; el OCR intenta leer ambos contadores aproximadamente cada 0,8 segundos. Un valor se acepta tras tres lecturas consecutivas iguales.
+- Pulsa `Iniciar lectura`. La ventana compacta muestra la zona y tres lecturas OCR (gris, umbral de contraste y detalle). Se acepta un conteo cuando al menos dos variantes coinciden y se repite en tres fotogramas consecutivos, capturados aproximadamente cada 0,45 segundos. Si las variantes discrepan, se conserva el último conteo confirmado y no se sincronizan órdenes por esa lectura dudosa.
 - En el dashboard (`Ctrl+Alt+G`), pulsa COPIAR para iniciar y PAUSAR para detener. La pausa no liquida posiciones abiertas.
 - Los cambios estables se guardan en `%APPDATA%\OroCopy\screen_observer.jsonl`; las coordenadas en `%APPDATA%\OroCopy\observer.json`; las sincronizaciones en `%APPDATA%\OroCopy\copy_execution.jsonl`.
 - Requiere Tesseract OCR para Windows además de las dependencias Python instaladas por `setup.ps1`. Sin Tesseract, la vista previa funciona, pero no la lectura del texto.
@@ -83,4 +83,3 @@ powershell.exe -ExecutionPolicy Bypass -File .\restore_taskbar.ps1
 ## Precauciones
 
 La copia visual puede ir retrasada respecto al directo. Revisa en MT5 cada orden y no uses una cuenta real para validar el OCR. Las órdenes copiadas se envían sin SL/TP inicial; la pausa del lector no cierra posiciones. No se deben introducir credenciales en OroCopy: el login se mantiene dentro de MT5.
-

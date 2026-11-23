@@ -38,9 +38,9 @@ except ImportError:
     pytesseract = None
 
 try:
-    from PIL import Image, ImageOps, ImageTk
+    from PIL import Image, ImageFilter, ImageOps, ImageStat, ImageTk
 except ImportError:
-    Image = ImageOps = ImageTk = None
+    Image = ImageFilter = ImageOps = ImageStat = ImageTk = None
 
 
 APP_NAME = "OroCopy"
@@ -50,6 +50,8 @@ TEXT = "#e8edf2"
 MUTED = "#9aa6b2"
 GREEN = "#57d99a"
 RED = "#ff7777"
+OCR_FRAME_INTERVAL = 0.45
+OCR_STABLE_SAMPLES = 3
 
 
 def app_data_dir() -> Path:
@@ -426,25 +428,51 @@ class ScreenObserver:
 
     def _capture_loop(self) -> None:
         while not self.stop_event.is_set():
+            started = time.monotonic()
             try:
                 with mss.mss() as screen:
                     shot = screen.grab(self.region)
                 image = Image.frombytes("RGB", shot.size, shot.rgb)
-                text = ""
-                ocr_data = None
-                if pytesseract is not None:
-                    processed = ImageOps.grayscale(image)
-                    processed = ImageOps.autocontrast(processed).resize(
-                        (max(1, processed.width * 3), max(1, processed.height * 3)))
-                    ocr_data = pytesseract.image_to_data(
-                        processed, config="--oem 3 --psm 6", lang="eng",
-                        output_type=pytesseract.Output.DICT)
-                    text = " ".join(str(word) for word in ocr_data["text"] if str(word).strip())
-                self._put_result((image, text, ocr_data, ""))
+                text, counts, agreement = self._recognize_counts(image)
+                self._put_result((image, text, counts, agreement, ""))
             except Exception as exc:
-                self._put_result((None, "", None, f"Error de captura/OCR: {exc}"))
-                self.stop_event.wait(1.0)
-            self.stop_event.wait(0.8)
+                self._put_result((None, "", None, 0, f"Error de captura/OCR: {exc}"))
+            elapsed = time.monotonic() - started
+            self.stop_event.wait(max(0.05, OCR_FRAME_INTERVAL - elapsed))
+
+    def _recognize_counts(self, image):
+        """Vote across different image/OCR settings for the fixed count panel."""
+        gray = ImageOps.autocontrast(ImageOps.grayscale(image))
+        mean = ImageStat.Stat(gray).mean[0]
+        threshold = int(max(105, min(205, mean)))
+        binary = gray.point(lambda value: 255 if value >= threshold else 0)
+        sharpened = gray.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=2))
+        variants = (
+            ("gris", gray, 6),
+            ("contraste", binary, 6),
+            ("detalle", sharpened, 11),
+        )
+        votes: dict[tuple[int, int], int] = {}
+        diagnostics = []
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        for name, variant, psm in variants:
+            enlarged = variant.resize(
+                (max(1, variant.width * 3), max(1, variant.height * 3)),
+                resampling)
+            data = pytesseract.image_to_data(
+                enlarged, config=f"--oem 3 --psm {psm}", lang="eng",
+                output_type=pytesseract.Output.DICT)
+            words = [str(word).strip() for word in data["text"] if str(word).strip()]
+            recognized = parse_counts(" ".join(words), data)
+            diagnostics.append(f"{name}={recognized if recognized is not None else '?'}")
+            if recognized is not None:
+                votes[recognized] = votes.get(recognized, 0) + 1
+
+        consensus = max(votes, key=votes.get) if votes else None
+        agreement = votes.get(consensus, 0) if consensus is not None else 0
+        if agreement < 2:
+            consensus = None
+        return " · ".join(diagnostics), consensus, agreement
 
     def _put_result(self, item) -> None:
         try:
@@ -467,7 +495,7 @@ class ScreenObserver:
         except queue.Empty:
             pass
         if latest is not None:
-            image, text, ocr_data, error = latest
+            image, text, counts, agreement, error = latest
             if image is not None:
                 image.thumbnail((430, 230))
                 self.last_photo = ImageTk.PhotoImage(image)
@@ -476,18 +504,18 @@ class ScreenObserver:
                 self.status_var.set(error[:160])
                 self._handle_ocr_failure("No se pudo capturar/leer la zona")
             else:
-                cleaned = re.sub(r"\s+", " ", text).strip()
-                self.raw_text.set(cleaned or "No se reconoció texto en la zona")
-                self._update_counts(text, ocr_data)
+                self.raw_text.set(text or "No se reconocieron los contadores")
+                self._update_counts(counts, agreement)
         if self.root.winfo_exists():
             self.root.after(100, self._poll_results)
 
-    def _update_counts(self, text: str, ocr_data: dict | None = None) -> None:
-        counts = parse_counts(text, ocr_data)
+    def _update_counts(self, counts: tuple[int, int] | None, agreement: int = 0) -> None:
         if counts is None:
             self._handle_ocr_failure("No se reconocen COMPRAS/VENTAS")
-            self.buy_var.set("COMPRAS: ?")
-            self.sell_var.set("VENTAS: ?")
+            if self.stable_counts is None:
+                self.buy_var.set("COMPRAS: ?")
+                self.sell_var.set("VENTAS: ?")
+            self.status_var.set("Lectura dudosa · las variantes no coinciden; conservo el último conteo")
             self.last_candidate = None
             self.candidate_repeats = 0
             return
@@ -501,12 +529,16 @@ class ScreenObserver:
         else:
             self.last_candidate = counts
             self.candidate_repeats = 1
-        if self.candidate_repeats < 3:
-            self.status_var.set("Confirmando lectura del contador…")
+        if self.candidate_repeats < OCR_STABLE_SAMPLES:
+            self.status_var.set(
+                f"Confirmando {self.candidate_repeats}/{OCR_STABLE_SAMPLES} · acuerdo OCR {agreement}/3…")
             return
         self.buy_var.set(f"COMPRAS: {counts[0]}")
         self.sell_var.set(f"VENTAS: {counts[1]}")
         if counts == self.stable_counts:
+            self.status_var.set(
+                f"Lectura confirmada · sin cambios · acuerdo OCR {agreement}/3")
+            self._publish_state()
             return
 
         previous = self.stable_counts
@@ -518,7 +550,7 @@ class ScreenObserver:
             else:
                 self._queue_copy_target(counts)
         if previous is None:
-            self.status_var.set("Lectura estable · esperando cambios de posiciones")
+            self.status_var.set(f"Lectura confirmada · esperando cambios · acuerdo OCR {agreement}/3")
         elif counts == (0, 0):
             self.status_var.set("Detectó cierre total · sincronizando copia" if self.copy_active
                                 else "Detectó cierre total · solo registrado, sin operar")
