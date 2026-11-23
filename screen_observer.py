@@ -327,8 +327,8 @@ class ScreenObserver:
                 pass
         self.root = tk.Tk()
         self.root.title("OroCopy · Lector de pantalla")
-        self.root.geometry("470x535")
-        self.root.minsize(400, 465)
+        self.root.geometry("430x465")
+        self.root.minsize(370, 405)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.region = load_region()
@@ -363,67 +363,74 @@ class ScreenObserver:
         self.copy_closed_total = 0
         self.copied_counts = (0, 0)
         self.ocr_failure_since: float | None = None
-        self.copy_symbol, _default_volume = load_copy_defaults()
-        self.copy_volume = 0.01
+        self.copy_symbol, default_volume = load_copy_defaults()
+        try:
+            self.copy_volume = float(str(default_volume).replace(",", "."))
+        except ValueError:
+            self.copy_volume = 0.01
 
         tk.Label(self.root, text="OROCOPY · LECTOR", bg=BG, fg=TEXT,
-                 font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=14, pady=(10, 1))
+                 font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=12, pady=(7, 1))
         tk.Label(self.root,
-                 text="Conteo visual del directo · control de copia en la barra Ctrl+Alt+G",
-                 bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=14)
+                 text="Conteo visual del directo · OroCopy",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w", padx=12)
 
         controls = tk.Frame(self.root, bg=BG)
-        controls.pack(fill="x", padx=14, pady=8)
-        self.select_button = self._button(controls, "Seleccionar zona", self.select_region,
-                                          "#275c4b")
-        self.select_button.pack(side="left", padx=(0, 8))
-        self.start_button = self._button(controls, "Iniciar lectura", self.start_reading,
-                                         "#176d46")
-        self.start_button.pack(side="left", padx=(0, 8))
-        self.stop_button = self._button(controls, "Detener lectura", self.stop_reading, "#842e35")
-        self.stop_button.pack(side="left")
+        controls.pack(fill="x", padx=10, pady=5)
+        for column in range(4):
+            controls.grid_columnconfigure(column, weight=1, uniform="reader-controls")
+        self.select_button = self._button(controls, "ZONA", self.select_region, "#275c4b")
+        self.start_button = self._button(controls, "INICIAR", self.start_reading, "#176d46")
+        self.stop_button = self._button(controls, "DETENER", self.stop_reading, "#842e35")
+        self.copy_button = self._button(controls, "COPIAR", self.toggle_copy, "#176d46")
+        for column, button in enumerate((self.select_button, self.start_button,
+                                         self.stop_button, self.copy_button)):
+            button.configure(font=("Segoe UI", 8, "bold"), padx=4, pady=3)
+            button.grid(row=0, column=column, sticky="ew", padx=2)
 
         source_controls = tk.Frame(self.root, bg=BG)
-        source_controls.pack(fill="x", padx=14, pady=(0, 5))
+        source_controls.pack(fill="x", padx=12, pady=(0, 3))
         self.source_var = tk.StringVar(value="monitor")
         for label, value in (("Monitor", "monitor"), ("Pestaña Chrome", "chrome")):
             tk.Radiobutton(source_controls, text=label, value=value, variable=self.source_var,
                            command=self._set_capture_source, bg=BG, fg=TEXT,
                            selectcolor=CARD, activebackground=BG, activeforeground=TEXT,
-                           font=("Segoe UI", 9)).pack(side="left", padx=(0, 12))
+                           font=("Segoe UI", 8)).pack(side="left", padx=(0, 8))
         self.chrome_pair_button = self._button(source_controls, "Vincular Chrome",
                                                self.show_chrome_pairing, "#34424f")
+        self.chrome_pair_button.configure(font=("Segoe UI", 8, "bold"), padx=6, pady=3)
         self.chrome_pair_button.pack(side="right")
 
         self.region_var = tk.StringVar(value=self._region_text())
         tk.Label(self.root, textvariable=self.region_var, bg=BG, fg=MUTED,
-                 font=("Consolas", 8)).pack(anchor="w", padx=16, pady=(0, 3))
+                 font=("Consolas", 7)).pack(anchor="w", padx=12, pady=(0, 2))
         self.preview = tk.Label(self.root, text="La vista previa aparecerá aquí",
-                                bg="#080c10", fg=MUTED, font=("Segoe UI", 9),
-                                width=55, height=10, relief="flat")
-        self.preview.pack(fill="both", expand=True, padx=14, pady=3)
+                                bg="#080c10", fg=MUTED, font=("Segoe UI", 8),
+                                width=45, height=7, relief="flat")
+        self.preview.pack(fill="both", expand=True, padx=12, pady=2)
 
         counts = tk.Frame(self.root, bg=CARD)
-        counts.pack(fill="x", padx=14, pady=(5, 3))
+        counts.pack(fill="x", padx=12, pady=(3, 2))
         self.buy_var = tk.StringVar(value="COMPRAS: —")
         self.sell_var = tk.StringVar(value="VENTAS: —")
         self.buy_label = tk.Label(counts, textvariable=self.buy_var, bg=CARD, fg=GREEN,
-                                  font=("Segoe UI", 13, "bold"), padx=10, pady=6)
+                                  font=("Segoe UI", 11, "bold"), padx=8, pady=3)
         self.buy_label.pack(side="left", expand=True)
         self.sell_label = tk.Label(counts, textvariable=self.sell_var, bg=CARD, fg=RED,
-                                   font=("Segoe UI", 13, "bold"), padx=10, pady=6)
+                                   font=("Segoe UI", 11, "bold"), padx=8, pady=3)
         self.sell_label.pack(side="left", expand=True)
         self.copy_summary_var = tk.StringVar(value="COPIA DEMO · DESARMADA")
         tk.Label(self.root, textvariable=self.copy_summary_var, bg=BG, fg=MUTED,
-                 font=("Segoe UI", 8, "bold"), anchor="w").pack(fill="x", padx=16, pady=(0, 2))
+                 font=("Segoe UI", 7, "bold"), anchor="w",
+                 wraplength=390).pack(fill="x", padx=12, pady=(0, 1))
         self.raw_text = tk.StringVar(value="—")
         tk.Label(self.root, textvariable=self.raw_text, bg=BG, fg=TEXT,
-                 font=("Consolas", 8), anchor="w", justify="left",
-                 wraplength=430).pack(fill="x", padx=16, pady=(2, 2))
+                 font=("Consolas", 7), anchor="w", justify="left",
+                 wraplength=390).pack(fill="x", padx=12, pady=(1, 1))
         self.status_var = tk.StringVar(value=self._ocr_status())
         tk.Label(self.root, textvariable=self.status_var, bg=BG, fg="#e0a34a",
-                 font=("Segoe UI", 8), anchor="w", justify="left",
-                 wraplength=430).pack(fill="x", padx=16, pady=(0, 7))
+                 font=("Segoe UI", 7), anchor="w", justify="left",
+                 wraplength=390).pack(fill="x", padx=12, pady=(0, 4))
 
         self.root.bind("<Escape>", lambda _event: self.root.iconify())
         self.root.after(100, self._poll_results)
@@ -434,8 +441,8 @@ class ScreenObserver:
     def _button(self, parent, label, command, color):
         return tk.Button(parent, text=label, command=command, relief="flat",
                          bg=color, fg="white", activebackground=color,
-                         activeforeground="white", font=("Segoe UI", 10, "bold"),
-                         padx=14, pady=8, cursor="hand2")
+                         activeforeground="white", font=("Segoe UI", 8, "bold"),
+                         padx=6, pady=4, cursor="hand2")
 
     def _ocr_status(self) -> str:
         if pytesseract is None or Image is None:
@@ -573,6 +580,7 @@ class ScreenObserver:
         self.running = True
         self.start_button.configure(state="disabled")
         self.chrome_last_frame_at = 0.0
+        self._publish_state()
         if self.capture_source == "chrome":
             self.status_var.set("Esperando fotogramas de la extensión Chrome…")
             target, worker_name = self._chrome_capture_loop, "OroCopyChromeReader"
@@ -590,6 +598,7 @@ class ScreenObserver:
         self.stop_event.set()
         self.start_button.configure(state="normal")
         self.status_var.set("Lectura detenida")
+        self._publish_state()
 
     def _chrome_capture_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -772,6 +781,56 @@ class ScreenObserver:
         else:
             self.status_var.set("Cambio detectado · sincronizando copia" if self.copy_active
                                 else "Cambio de posiciones detectado · solo registrado, sin operar")
+        self._publish_state()
+
+    def _sync_copy_button(self) -> None:
+        if not hasattr(self, "copy_button"):
+            return
+        active = self.copy_active
+        can_arm = (self.running and self.copy_engine is not None and
+                   self.stable_counts is not None and
+                   not (self.stable_counts[0] and self.stable_counts[1]))
+        self.copy_button.configure(
+            text="PAUSAR" if active else "COPIAR",
+            bg="#842e35" if active else "#176d46",
+            activebackground="#842e35" if active else "#176d46",
+            state="normal" if active or can_arm else "disabled")
+
+    def toggle_copy(self) -> None:
+        if self.copy_active:
+            self._disarm_copy("Copia pausada manualmente; posiciones abiertas siguen en MT5.")
+            return
+        if not self.running or self.stable_counts is None:
+            self.copy_status = "Inicia lectura y espera el conteo estable"
+            self._publish_state()
+            return
+        buys, sells = self.stable_counts
+        if buys and sells:
+            self.copy_status = "Conteo ambiguo · compras y ventas simultáneas"
+            self._publish_state()
+            return
+        if self.copy_engine is None:
+            self.copy_status = "MT5 no disponible · copia no armada"
+            self._publish_state()
+            return
+        try:
+            symbol, volume_text = load_copy_defaults()
+            volume = float(str(volume_text).replace(",", "."))
+            if volume <= 0:
+                raise ValueError("El lote debe ser mayor que cero")
+            account = self.copy_engine.inspect_demo(symbol)
+            side_count = f"{buys} BUY" if buys else f"{sells} SELL" if sells else "0 posiciones"
+            warning = (
+                f"{account}\n{symbol} · lote {volume:g} por orden\n"
+                f"Conteo estable: {side_count}.\n\n"
+                "Las entradas se copiarán según el conteo visible. No llevan SL/TP inicial. "
+                "¿Armar la copia DEMO?")
+            if messagebox.askyesno("Confirmar copia DEMO", warning, parent=self.root,
+                                   icon="warning"):
+                self._arm_copy(volume, symbol)
+        except Exception as exc:
+            self.copy_status = f"Copia bloqueada · {exc}"
+            self._publish_state()
 
     def _arm_copy(self, volume_value, symbol_value=None) -> None:
         if self.copy_engine is None:
@@ -951,6 +1010,7 @@ class ScreenObserver:
                 f"COPIA DEMO · {'ACTIVA' if self.copy_active else 'PAUSADA'} · "
                 f"BUY {self.copied_counts[0]} / SELL {self.copied_counts[1]} · "
                 f"cerradas {self.copy_closed_total}")
+            self._sync_copy_button()
         except OSError:
             pass
 

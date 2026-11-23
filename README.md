@@ -18,7 +18,7 @@ Proyecto paralelo basado en OroControl. Conserva el panel nativo de MT5 y añade
 - Las órdenes manuales BUY/SELL no llevan SL/TP inicial. El dashboard conserva BE y los controles de cierre para gestionar las posiciones abiertas.
 - BE mueve el SL al precio de entrada de todas las posiciones. El botón `50% + BE` cierra la mitad del volumen y, si completa el parcial, mueve a breakeven el SL de las posiciones que quedan abiertas. `CERRAR 100%` intenta cerrar toda la exposición.
 - Los controles dependen del estado: sin posiciones, BUY/SELL están disponibles y los controles de gestión se desactivan; al detectar una posición, BUY/SELL se bloquean y BE y los cierres quedan disponibles.
-- El botón COPIAR/PAUSAR del dashboard controla el conteo estable del observador. Solo envía órdenes si MT5 verifica una cuenta DEMO. Las posiciones copiadas usan un magic propio y se sincronizan por cantidad, con el símbolo y lote del dashboard.
+- El botón COPIAR/PAUSAR de la ventana del lector controla el conteo estable. Solo envía órdenes si MT5 verifica una cuenta DEMO. Usa el símbolo y lote guardados en la configuración del dashboard. Las posiciones copiadas usan un magic propio y se sincronizan por cantidad.
 - Al reducirse el conteo observado, OroCopy cierra los tickets excedentes y mueve los restantes a BE; un conteo cero cierra todas las posiciones de OroCopy. Un fallo continuo de OCR de 30 segundos pausa la copia, pero deja abiertas las posiciones para revisión manual.
 - El contador del dashboard muestra los tickets copiados BUY, SELL y el total cerrado durante la sesión del observador. BE y los botones de cierre del dashboard actúan sobre todas las posiciones del símbolo, incluidas las copiadas.
 
@@ -49,7 +49,7 @@ El panel no se abre solo: inicia en segundo plano y espera `Ctrl+Alt+G`. No se i
 - Inicia OroCopy y pulsa `Ctrl+Alt+O` (o selecciona `Lector de TikTok` desde el menú del icono en la bandeja). El lector inicia el dashboard si aún no estaba abierto.
 - Pulsa `Seleccionar zona`: primero elige la pantalla que muestra el directo y después arrastra el rectángulo con `COMPRAS`, `VENTAS` y sus cantidades. OroCopy guarda la pantalla y la zona para la próxima ejecución, y valida que el recorte siga dentro del monitor elegido antes de leerlo.
 - Pulsa `Iniciar lectura`. La ventana compacta muestra la zona y tres lecturas OCR (gris, umbral de contraste y detalle), además de la confianza de los dígitos. Se acepta un conteo cuando al menos dos variantes coinciden y se repite en tres fotogramas consecutivos, capturados aproximadamente cada 0,45 segundos. Si solo una variante reconoce el valor con confianza de al menos 55 %, debe repetirse seis veces. Si las variantes reconocen valores distintos o la confianza es baja, se conserva el último conteo confirmado y no se sincronizan órdenes por esa lectura dudosa.
-- En el dashboard (`Ctrl+Alt+G`), pulsa COPIAR para iniciar y PAUSAR para detener. La pausa no liquida posiciones abiertas.
+- En la ventana del lector, pulsa COPIAR para iniciar y PAUSAR para detener. La pausa no liquida posiciones abiertas.
 - Los cambios estables se guardan en `%APPDATA%\OroCopy\screen_observer.jsonl`; las coordenadas en `%APPDATA%\OroCopy\observer.json`; las sincronizaciones en `%APPDATA%\OroCopy\copy_execution.jsonl`.
 - Requiere Tesseract OCR para Windows además de las dependencias Python instaladas por `setup.ps1`. Sin Tesseract, la vista previa funciona, pero no la lectura del texto.
 - El registro marca cuándo el cambio apareció en pantalla; no conoce el retraso del directo respecto a la operación real del experto.
@@ -80,7 +80,7 @@ La vista previa ocupa el rectángulo detectado de la barra de Windows, ajusta el
 2. Inicia OroCopy y pulsa `Ctrl+Alt+G`.
 3. Ajusta símbolo y volumen. BUY/SELL envían diez órdenes a mercado al primer clic, sin SL/TP inicial.
 4. Con posiciones abiertas, BE mueve el SL al precio de entrada; `50% + BE` cierra la mitad y protege las restantes; CERRAR 100% intenta cerrar todo.
-5. Para copiar, inicia la lectura, espera un conteo estable, pulsa COPIAR en el dashboard y confirma DEMO, símbolo, lote y conteo. PAUSAR detiene futuras sincronizaciones, pero no cierra las posiciones restantes.
+5. Para copiar, inicia la lectura, espera un conteo estable, pulsa COPIAR en el lector y confirma DEMO, símbolo, lote y conteo. PAUSAR detiene futuras sincronizaciones, pero no cierra las posiciones restantes.
 
 ## Recuperar la barra de Windows
 

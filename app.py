@@ -231,13 +231,10 @@ class GoldControl:
         self.cruise_button = self._button("CRUZ", "#34424f",
                                          self.toggle_cruise, pady=(1, 1))
         self.cruise_button.pack_forget()
-        self.copy_button = self._button("COPIAR", "#176d46", self.toggle_copy,
-                                        pady=(2, 1))
         self.copy_counts_var = tk.StringVar(value="COPY B0 S0 C0")
         self.copy_counts_label = self._label("COPY B0 S0 C0", 7, "#9aa6b2", bold=True,
                                              pady=(1, 1))
         self.copy_counts_label.configure(textvariable=self.copy_counts_var)
-        self.copy_button.pack_configure(before=self.be_button)
         self.copy_counts_label.pack_configure(before=self.be_button)
         self.close_half_button = self._button("50% + BE", "#8b6530",
                                               self.close_half_protected, pady=(1, 2))
@@ -331,7 +328,6 @@ class GoldControl:
         entry_state = "disabled" if has_position else ("normal" if enabled else "disabled")
         self.buy_button.configure(state=entry_state)
         self.sell_button.configure(state=entry_state)
-        self.copy_button.configure(state="normal" if enabled and self.copy_state_fresh else "disabled")
         self.save_button.configure(
             state="normal" if has_position else "disabled")
         for control in (self.be_button, self.cruise_button,
@@ -504,11 +500,6 @@ class GoldControl:
             except (TypeError, ValueError):
                 self.copy_counts_var.set("B— S— C—")
             active = bool(fresh and state.get("copy_active"))
-            self.copy_button.configure(
-                text="PAUSAR" if active else "COPIAR",
-                bg="#842e35" if active else "#176d46",
-                activebackground="#842e35" if active else "#176d46")
-            self.copy_button.configure(state="normal" if self.mt5_ready and fresh else "disabled")
             for key in ("symbol", "volume"):
                 self.field_entries[key].configure(
                     state="disabled" if active else "normal")
@@ -519,51 +510,6 @@ class GoldControl:
                 self._set_feedback(state_status[:48], "#e0a34a")
             self.copy_last_status = state_status
         self._after(500, self._refresh_copy_state)
-
-    def toggle_copy(self) -> None:
-        if send_observer_command is None:
-            self._set_feedback("IPC DE COPIA NO DISPONIBLE", "#ff7777")
-            return
-        state = read_observer_state() if read_observer_state is not None else {}
-        stamp = state.get("updated_at")
-        try:
-            age = (datetime.now().astimezone() - datetime.fromisoformat(stamp)).total_seconds()
-            if not (-1 <= age <= 2.0):
-                raise ValueError("lector desconectado")
-        except (TypeError, ValueError):
-            self._set_feedback("LECTOR DESCONECTADO", "#e0a34a")
-            return
-        if state.get("copy_active"):
-            send_observer_command("pause")
-            self._set_feedback("PAUSANDO COPIA")
-            return
-        if not state.get("reading") or state.get("buys") is None or state.get("sells") is None:
-            self._set_feedback("ESPERA LECTURA ESTABLE", "#e0a34a")
-            return
-        buys, sells = int(state["buys"]), int(state["sells"])
-        if buys and sells:
-            self._set_feedback("CONTEO AMBIGUO", "#ff7777")
-            return
-        if self.copy_engine is None:
-            self._set_feedback("MT5 NO DISPONIBLE", "#ff7777")
-            return
-        try:
-            volume = self._number("volume")
-            if volume is None or volume <= 0:
-                raise ValueError("El lote debe ser mayor que cero.")
-            account = self.copy_engine.inspect_demo(self.symbol)
-            side_count = f"{buys} BUY" if buys else f"{sells} SELL" if sells else "0 posiciones"
-            warning = (
-                f"{account}\n{self.symbol} · lote {volume:g} por orden\n"
-                f"Conteo estable: {side_count}.\n\n"
-                "Se copiarán las cantidades visibles. Las entradas no llevan SL/TP inicial. "
-                "El cierre depende del contador del directo y de la lectura OCR.\n\n¿Armar copia DEMO?")
-            if not messagebox.askyesno("Confirmar copia DEMO", warning, icon="warning"):
-                return
-            send_observer_command("arm", volume=volume, symbol=self.symbol)
-            self._set_feedback("ARMANDO COPIA DEMO")
-        except Exception as exc:
-            self._set_feedback(str(exc)[:50], "#ff7777")
 
     def _after(self, delay_ms: int, callback, *args) -> None:
         """Schedule Tk work only while its interpreter is alive."""
@@ -623,13 +569,11 @@ class GoldControl:
             self.field_labels["volume"].configure(text="LOTE")
             self.buy_button.configure(text="BUY")
             self.be_button.configure(text="BE")
-            self.copy_button.configure(text="PAUSAR" if self.copy_state_fresh and self.copy_state.get("copy_active") else "COPIAR")
         else:
             self.field_labels["symbol"].configure(text="Símbolo")
             self.field_labels["volume"].configure(text="Volumen")
             self.buy_button.configure(text="COMPRAR")
             self.be_button.configure(text="BREAKEVEN")
-            self.copy_button.configure(text="PAUSAR COPIA" if self.copy_state_fresh and self.copy_state.get("copy_active") else "COPIAR")
         self.price_label.configure(font=("Segoe UI", 13 if roomy_layout else (11 if tall_narrow_layout else (9 if self.narrow_layout else 14)), "bold"))
         self.entry_price_label.configure(font=("Segoe UI", 9 if roomy_layout else 8, "bold"))
         self.position_heading.configure(font=("Segoe UI", 9 if roomy_layout else (8 if tall_narrow_layout else (7 if self.narrow_layout else 9)), "bold"))
