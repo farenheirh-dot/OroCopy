@@ -47,7 +47,7 @@ El panel no se abre solo: inicia en segundo plano y espera `Ctrl+Alt+G`. No se i
 ## Lector visual del directo
 
 - Inicia OroCopy y pulsa `Ctrl+Alt+O` (o selecciona `Lector de TikTok` desde el menú del icono en la bandeja). El lector inicia el dashboard si aún no estaba abierto.
-- Pulsa `Seleccionar zona` y arrastra un rectángulo que incluya los rótulos `COMPRAS` y `VENTAS` y sus cantidades. La zona se guarda para la próxima ejecución.
+- Pulsa `Seleccionar zona`: primero elige la pantalla que muestra el directo y después arrastra el rectángulo con `COMPRAS`, `VENTAS` y sus cantidades. OroCopy guarda la pantalla y la zona para la próxima ejecución, y valida que el recorte siga dentro del monitor elegido antes de leerlo.
 - Pulsa `Iniciar lectura`. La ventana compacta muestra la zona y tres lecturas OCR (gris, umbral de contraste y detalle), además de la confianza de los dígitos. Se acepta un conteo cuando al menos dos variantes coinciden y se repite en tres fotogramas consecutivos, capturados aproximadamente cada 0,45 segundos. Si solo una variante reconoce el valor con confianza de al menos 55 %, debe repetirse seis veces. Si las variantes reconocen valores distintos o la confianza es baja, se conserva el último conteo confirmado y no se sincronizan órdenes por esa lectura dudosa.
 - En el dashboard (`Ctrl+Alt+G`), pulsa COPIAR para iniciar y PAUSAR para detener. La pausa no liquida posiciones abiertas.
 - Los cambios estables se guardan en `%APPDATA%\OroCopy\screen_observer.jsonl`; las coordenadas en `%APPDATA%\OroCopy\observer.json`; las sincronizaciones en `%APPDATA%\OroCopy\copy_execution.jsonl`.

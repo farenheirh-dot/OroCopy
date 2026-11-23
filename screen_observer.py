@@ -71,7 +71,9 @@ def load_region() -> dict | None:
         data = json.loads(config_file().read_text(encoding="utf-8"))
         region = data.get("region")
         if region and all(k in region for k in ("left", "top", "width", "height")):
-            return {k: int(region[k]) for k in ("left", "top", "width", "height")}
+            loaded = {k: int(region[k]) for k in ("left", "top", "width", "height")}
+            loaded["monitor"] = max(1, int(region.get("monitor", 1)))
+            return loaded
     except (OSError, ValueError, TypeError):
         pass
     return None
@@ -198,23 +200,24 @@ def parse_counts(text: str, ocr_data: dict | None = None) -> tuple[int, int] | N
 
 
 class RegionSelector:
-    def __init__(self, owner: "ScreenObserver") -> None:
+    def __init__(self, owner: "ScreenObserver", monitor_number: int,
+                 monitor: dict) -> None:
         self.owner = owner
+        self.monitor_number = monitor_number
         self.window = tk.Toplevel(owner.root)
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         self.window.attributes("-alpha", 0.22)
-        with mss.mss() as screen:
-            virtual = screen.monitors[0]
-        self.origin_x, self.origin_y = virtual["left"], virtual["top"]
-        x_offset = str(self.origin_x) if self.origin_x < 0 else f"+{self.origin_x}"
-        y_offset = str(self.origin_y) if self.origin_y < 0 else f"+{self.origin_y}"
-        self.window.geometry(f"{virtual['width']}x{virtual['height']}{x_offset}{y_offset}")
+        self.origin_x, self.origin_y = monitor["left"], monitor["top"]
+        x_offset = f"{self.origin_x:+d}"
+        y_offset = f"{self.origin_y:+d}"
+        self.window.geometry(f"{monitor['width']}x{monitor['height']}{x_offset}{y_offset}")
         self.canvas = tk.Canvas(self.window, bg="#06111a", highlightthickness=0,
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.create_text(24, 24, anchor="nw",
-                                text="Arrastra un rectángulo que incluya COMPRAS y VENTAS · Esc cancela",
+                                text=(f"Pantalla {monitor_number}: arrastra el área con COMPRAS y VENTAS"
+                                      " · Esc cancela"),
                                 fill="white", font=("Segoe UI", 16, "bold"))
         self.start: tuple[int, int] | None = None
         self.rectangle = None
@@ -254,6 +257,7 @@ class RegionSelector:
         region = {
             "left": min(x1, x2), "top": min(y1, y2),
             "width": abs(x2 - x1), "height": abs(y2 - y1),
+            "monitor": self.monitor_number,
         }
         self.window.destroy()
         if region["width"] < 40 or region["height"] < 25:
@@ -262,6 +266,51 @@ class RegionSelector:
             self.owner.root.lift()
             return
         self.owner.set_region(region)
+
+
+class MonitorSelector:
+    def __init__(self, owner: "ScreenObserver", monitors: list[dict]) -> None:
+        self.owner = owner
+        self.monitors = monitors
+        self.window = tk.Toplevel(owner.root)
+        self.window.title("OroCopy · elegir pantalla")
+        self.window.configure(bg=BG)
+        self.window.resizable(False, False)
+        self.window.attributes("-topmost", True)
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+        tk.Label(self.window, text="ELIGE LA PANTALLA", bg=BG, fg=TEXT,
+                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(self.window, text="Selecciona primero el monitor donde está el directo.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 10))
+        for index, monitor in enumerate(monitors, start=1):
+            label = (f"Pantalla {index} · {monitor['width']}×{monitor['height']} px"
+                     f" · posición {monitor['left']},{monitor['top']}")
+            tk.Button(self.window, text=label, command=lambda i=index, m=monitor: self.choose(i, m),
+                      relief="flat", bg="#176d46", fg="white", activebackground="#238858",
+                      activeforeground="white", font=("Segoe UI", 9, "bold"),
+                      padx=10, pady=8, cursor="hand2").pack(fill="x", padx=16, pady=4)
+        tk.Button(self.window, text="Cancelar", command=self.cancel, relief="flat",
+                  bg=CARD, fg=TEXT, font=("Segoe UI", 9), padx=10, pady=6).pack(
+                      anchor="e", padx=16, pady=(6, 12))
+        self.window.update_idletasks()
+        width, height = self.window.winfo_width(), self.window.winfo_height()
+        self.window.geometry(f"{width}x{height}+80+80")
+        self.window.grab_set()
+        self.window.focus_force()
+
+    def choose(self, number: int, monitor: dict) -> None:
+        self.window.grab_release()
+        self.window.destroy()
+        self.owner.root.after(120, lambda: RegionSelector(self.owner, number, monitor))
+
+    def cancel(self) -> None:
+        try:
+            self.window.grab_release()
+        except tk.TclError:
+            pass
+        self.window.destroy()
+        self.owner.root.deiconify()
+        self.owner.root.lift()
 
 
 class ScreenObserver:
@@ -375,16 +424,29 @@ class ScreenObserver:
 
     def _region_text(self) -> str:
         if not self.region:
-            return "Zona: sin seleccionar"
+            return "Pantalla y zona: sin seleccionar"
         r = self.region
-        return f"Zona: x={r['left']} y={r['top']} · {r['width']}×{r['height']} px"
+        return (f"Pantalla {r.get('monitor', 1)} · zona x={r['left']} y={r['top']} · "
+                f"{r['width']}×{r['height']} px")
 
     def select_region(self) -> None:
         if self.running:
             self.status_var.set("Detén la lectura antes de cambiar la zona")
             return
+        if mss is None:
+            self.status_var.set("No se pueden listar pantallas: falta mss. Ejecuta setup.ps1.")
+            return
+        try:
+            with mss.mss() as screen:
+                monitors = [dict(monitor) for monitor in screen.monitors[1:]]
+        except Exception as exc:
+            self.status_var.set(f"No se pudieron listar las pantallas: {exc}")
+            return
+        if not monitors:
+            self.status_var.set("No se detectaron monitores disponibles")
+            return
         self.root.withdraw()
-        self.root.after(250, lambda: RegionSelector(self))
+        self.root.after(150, lambda: MonitorSelector(self, monitors))
 
     def set_region(self, region: dict) -> None:
         self.region = region
@@ -400,6 +462,22 @@ class ScreenObserver:
             return
         if mss is None or Image is None:
             self.status_var.set("No se puede capturar: faltan Pillow o mss. Ejecuta setup.ps1.")
+            return
+        try:
+            with mss.mss() as screen:
+                monitor_number = int(self.region.get("monitor", 1))
+                monitors = screen.monitors[1:]
+                if monitor_number < 1 or monitor_number > len(monitors):
+                    raise ValueError("La pantalla guardada ya no está disponible")
+                monitor = monitors[monitor_number - 1]
+                left, top = int(self.region["left"]), int(self.region["top"])
+                right, bottom = left + int(self.region["width"]), top + int(self.region["height"])
+                if (left < monitor["left"] or top < monitor["top"] or
+                        right > monitor["left"] + monitor["width"] or
+                        bottom > monitor["top"] + monitor["height"]):
+                    raise ValueError("La zona quedó fuera de la pantalla guardada")
+        except (ValueError, OSError) as exc:
+            self.status_var.set(f"Vuelve a elegir pantalla y zona: {exc}")
             return
         if pytesseract is None or not find_tesseract():
             self.status_var.set("No se puede leer texto: instala Tesseract OCR y reinicia OroCopy.")
@@ -435,7 +513,9 @@ class ScreenObserver:
             started = time.monotonic()
             try:
                 with mss.mss() as screen:
-                    shot = screen.grab(self.region)
+                    capture_rect = {key: self.region[key]
+                                    for key in ("left", "top", "width", "height")}
+                    shot = screen.grab(capture_rect)
                 image = Image.frombytes("RGB", shot.size, shot.rgb)
                 text, counts, agreement = self._recognize_counts(image)
                 self._put_result((image, text, counts, agreement, ""))
