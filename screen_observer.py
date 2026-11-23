@@ -28,6 +28,11 @@ except ImportError:
     read_observer_command = write_observer_state = None
 
 try:
+    from chrome_capture import ChromeCaptureServer
+except ImportError:
+    ChromeCaptureServer = None
+
+try:
     import mss
 except ImportError:
     mss = None
@@ -322,8 +327,8 @@ class ScreenObserver:
                 pass
         self.root = tk.Tk()
         self.root.title("OroCopy · Lector de pantalla")
-        self.root.geometry("470x500")
-        self.root.minsize(400, 430)
+        self.root.geometry("470x535")
+        self.root.minsize(400, 465)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.region = load_region()
@@ -331,6 +336,15 @@ class ScreenObserver:
         self.stop_event = threading.Event()
         self.results: queue.Queue = queue.Queue(maxsize=2)
         self.worker: threading.Thread | None = None
+        self.capture_source = "monitor"
+        self.chrome_frames: queue.Queue = queue.Queue(maxsize=2)
+        self.chrome_last_frame_at = 0.0
+        self.chrome_server = (ChromeCaptureServer(app_data_dir(), self._receive_chrome_frame,
+                                                  lambda: self.running and
+                                                  self.capture_source == "chrome")
+                             if ChromeCaptureServer is not None else None)
+        if self.chrome_server is not None:
+            self.chrome_server.start()
         self.last_candidate: tuple[int, int] | None = None
         self.candidate_repeats = 0
         self.candidate_required = OCR_STABLE_SAMPLES
@@ -368,6 +382,18 @@ class ScreenObserver:
         self.start_button.pack(side="left", padx=(0, 8))
         self.stop_button = self._button(controls, "Detener lectura", self.stop_reading, "#842e35")
         self.stop_button.pack(side="left")
+
+        source_controls = tk.Frame(self.root, bg=BG)
+        source_controls.pack(fill="x", padx=14, pady=(0, 5))
+        self.source_var = tk.StringVar(value="monitor")
+        for label, value in (("Monitor", "monitor"), ("Pestaña Chrome", "chrome")):
+            tk.Radiobutton(source_controls, text=label, value=value, variable=self.source_var,
+                           command=self._set_capture_source, bg=BG, fg=TEXT,
+                           selectcolor=CARD, activebackground=BG, activeforeground=TEXT,
+                           font=("Segoe UI", 9)).pack(side="left", padx=(0, 12))
+        self.chrome_pair_button = self._button(source_controls, "Vincular Chrome",
+                                               self.show_chrome_pairing, "#34424f")
+        self.chrome_pair_button.pack(side="right")
 
         self.region_var = tk.StringVar(value=self._region_text())
         tk.Label(self.root, textvariable=self.region_var, bg=BG, fg=MUTED,
@@ -412,15 +438,59 @@ class ScreenObserver:
                          padx=14, pady=8, cursor="hand2")
 
     def _ocr_status(self) -> str:
-        if mss is None:
-            return "Falta la dependencia mss; ejecuta setup.ps1 para instalarla."
         if pytesseract is None or Image is None:
             return "Faltan dependencias de OCR; ejecuta setup.ps1 para instalarlas."
         exe = find_tesseract()
         if not exe:
             return "Instala Tesseract OCR para Windows; la vista previa seguirá disponible."
         pytesseract.pytesseract.tesseract_cmd = exe
-        return "Listo para capturar. El reconocimiento puede requerir ajustar la zona."
+        if self.chrome_server is not None and self.chrome_server.error:
+            return f"Puente Chrome no disponible: {self.chrome_server.error[:100]}"
+        return "Listo. Elige Monitor o Pestaña Chrome antes de iniciar lectura."
+
+    def _set_capture_source(self) -> None:
+        if self.running:
+            self.source_var.set(self.capture_source)
+            self.status_var.set("Detén la lectura antes de cambiar la fuente")
+            return
+        self.capture_source = self.source_var.get()
+        if self.capture_source == "chrome":
+            if self.chrome_server is None or not self.chrome_server.available:
+                self.status_var.set("Puente Chrome no disponible; revisa el puerto local 39872")
+            else:
+                self.status_var.set("Chrome: inicia lectura y captura la pestaña desde la extensión")
+        else:
+            self.status_var.set("Monitor: elige pantalla y zona antes de iniciar lectura")
+
+    def show_chrome_pairing(self) -> None:
+        if self.chrome_server is None or not self.chrome_server.available:
+            messagebox.showerror("OroCopy · Chrome", "No está disponible el puente local de Chrome.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.chrome_server.token)
+        self.root.update_idletasks()
+        messagebox.showinfo(
+            "Vincular extensión OroCopy",
+            "Token copiado al portapapeles. Pégalo en la extensión de Chrome.\n\n"
+            f"Dirección local: {self.chrome_server.url}\n\n"
+            "El token solo autoriza el envío de imágenes a este lector local.")
+
+    def _receive_chrome_frame(self, image) -> bool:
+        if not self.running or self.capture_source != "chrome":
+            return False
+        try:
+            self.chrome_frames.put_nowait(image)
+        except queue.Full:
+            try:
+                self.chrome_frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.chrome_frames.put_nowait(image)
+            except queue.Full:
+                return False
+        self.chrome_last_frame_at = time.monotonic()
+        return True
 
     def _region_text(self) -> str:
         if not self.region:
@@ -457,27 +527,35 @@ class ScreenObserver:
         self.status_var.set("Zona guardada. Asegúrate de incluir los rótulos y sus cantidades.")
 
     def start_reading(self) -> None:
-        if self.region is None:
-            messagebox.showinfo("Selecciona una zona", "Marca primero el área que contiene COMPRAS y VENTAS.")
+        self.capture_source = self.source_var.get()
+        if self.capture_source == "monitor":
+            if self.region is None:
+                messagebox.showinfo("Selecciona una zona", "Marca primero el área que contiene COMPRAS y VENTAS.")
+                return
+            if mss is None:
+                self.status_var.set("No se puede capturar: falta mss. Ejecuta setup.ps1.")
+                return
+            try:
+                with mss.mss() as screen:
+                    monitor_number = int(self.region.get("monitor", 1))
+                    monitors = screen.monitors[1:]
+                    if monitor_number < 1 or monitor_number > len(monitors):
+                        raise ValueError("La pantalla guardada ya no está disponible")
+                    monitor = monitors[monitor_number - 1]
+                    left, top = int(self.region["left"]), int(self.region["top"])
+                    right, bottom = left + int(self.region["width"]), top + int(self.region["height"])
+                    if (left < monitor["left"] or top < monitor["top"] or
+                            right > monitor["left"] + monitor["width"] or
+                            bottom > monitor["top"] + monitor["height"]):
+                        raise ValueError("La zona quedó fuera de la pantalla guardada")
+            except (ValueError, OSError) as exc:
+                self.status_var.set(f"Vuelve a elegir pantalla y zona: {exc}")
+                return
+        elif self.chrome_server is None or not self.chrome_server.available:
+            self.status_var.set("Puente Chrome no disponible; cierra otra app que use el puerto 39872")
             return
-        if mss is None or Image is None:
-            self.status_var.set("No se puede capturar: faltan Pillow o mss. Ejecuta setup.ps1.")
-            return
-        try:
-            with mss.mss() as screen:
-                monitor_number = int(self.region.get("monitor", 1))
-                monitors = screen.monitors[1:]
-                if monitor_number < 1 or monitor_number > len(monitors):
-                    raise ValueError("La pantalla guardada ya no está disponible")
-                monitor = monitors[monitor_number - 1]
-                left, top = int(self.region["left"]), int(self.region["top"])
-                right, bottom = left + int(self.region["width"]), top + int(self.region["height"])
-                if (left < monitor["left"] or top < monitor["top"] or
-                        right > monitor["left"] + monitor["width"] or
-                        bottom > monitor["top"] + monitor["height"]):
-                    raise ValueError("La zona quedó fuera de la pantalla guardada")
-        except (ValueError, OSError) as exc:
-            self.status_var.set(f"Vuelve a elegir pantalla y zona: {exc}")
+        if Image is None:
+            self.status_var.set("No se puede procesar la imagen: instala Pillow desde setup.ps1.")
             return
         if pytesseract is None or not find_tesseract():
             self.status_var.set("No se puede leer texto: instala Tesseract OCR y reinicia OroCopy.")
@@ -494,9 +572,14 @@ class ScreenObserver:
         self.stop_event.clear()
         self.running = True
         self.start_button.configure(state="disabled")
-        self.status_var.set("Lectura activa · la copia se controla desde el dashboard")
-        self.worker = threading.Thread(target=self._capture_loop, daemon=True,
-                                       name="OroCopyScreenReader")
+        self.chrome_last_frame_at = 0.0
+        if self.capture_source == "chrome":
+            self.status_var.set("Esperando fotogramas de la extensión Chrome…")
+            target, worker_name = self._chrome_capture_loop, "OroCopyChromeReader"
+        else:
+            self.status_var.set("Lectura activa desde monitor · copia desde el dashboard")
+            target, worker_name = self._capture_loop, "OroCopyScreenReader"
+        self.worker = threading.Thread(target=target, daemon=True, name=worker_name)
         self.worker.start()
 
     def stop_reading(self) -> None:
@@ -507,6 +590,18 @@ class ScreenObserver:
         self.stop_event.set()
         self.start_button.configure(state="normal")
         self.status_var.set("Lectura detenida")
+
+    def _chrome_capture_loop(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                image = self.chrome_frames.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                text, counts, agreement = self._recognize_counts(image)
+                self._put_result((image, text, counts, agreement, ""))
+            except Exception as exc:
+                self._put_result((None, "", None, 0, f"Error de OCR Chrome: {exc}"))
 
     def _capture_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -614,6 +709,11 @@ class ScreenObserver:
             else:
                 self.raw_text.set(text or "No se reconocieron los contadores")
                 self._update_counts(counts, agreement)
+        if self.running and self.capture_source == "chrome":
+            if self.chrome_last_frame_at == 0:
+                self.status_var.set("Esperando fotogramas · inicia captura desde la extensión Chrome")
+            elif time.monotonic() - self.chrome_last_frame_at > 3:
+                self.status_var.set("Sin fotogramas recientes · revisa la pestaña Chrome")
         if self.root.winfo_exists():
             self.root.after(100, self._poll_results)
 
@@ -888,6 +988,8 @@ class ScreenObserver:
         self.stop_event.set()
         self.running = False
         self._publish_state()
+        if self.chrome_server is not None:
+            self.chrome_server.close()
         self.root.destroy()
 
 

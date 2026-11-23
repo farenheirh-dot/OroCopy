@@ -5,3 +5,4 @@ __pycache__/
 .env
 .env.*
 settings.json
+chrome_capture_token.txt

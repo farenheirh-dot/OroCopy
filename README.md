@@ -54,6 +54,16 @@ El panel no se abre solo: inicia en segundo plano y espera `Ctrl+Alt+G`. No se i
 - Requiere Tesseract OCR para Windows además de las dependencias Python instaladas por `setup.ps1`. Sin Tesseract, la vista previa funciona, pero no la lectura del texto.
 - El registro marca cuándo el cambio apareció en pantalla; no conoce el retraso del directo respecto a la operación real del experto.
 
+## Captura de una pestaña Chrome
+
+- En el lector local, elige `Pestaña Chrome`, pulsa `Vincular Chrome` y pega el token copiado en la extensión.
+- En `chrome://extensions`, activa el modo desarrollador, pulsa `Cargar descomprimida` y elige la carpeta `chrome_extension` de este proyecto.
+- Abre la pestaña del directo, pulsa el icono OroCopy y elige `Seleccionar zona en esta pestaña`. Arrastra alrededor de los contadores `COMPRAS` y `VENTAS` y su número de posiciones.
+- En el lector local pulsa `Iniciar lectura`; luego, desde la extensión, pulsa `Capturar esta pestaña` y acepta el permiso de captura de Chrome.
+- La extensión recorta la zona elegida desde el flujo de video de esa pestaña y envía un JPEG cada 0,65 s al proceso OroCopy en `127.0.0.1`. El recorte y OCR siguen funcionando si otra ventana cubre Chrome; no minimices ni cierres la pestaña durante la captura.
+- El token local está en `%APPDATA%\\OroCopy\\chrome_capture_token.txt` y no se incluye en Git. El puente escucha solo en `127.0.0.1:39872`, acepta llamadas desde la extensión con token válido y recibe imágenes; las órdenes de trading siguen protegidas por la lógica demo de OroCopy.
+- Para detener, pulsa `Detener` en la extensión y `Detener lectura` en OroCopy. La pausa de la copia conserva las posiciones en MT5, igual que en el modo monitor.
+
 ## Vista previa sin MT5
 
 Para ver la barra antes de instalar Python o MT5, abre una PowerShell interactiva en esta carpeta y ejecuta:

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OroCopy</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>OroCopy · Chrome</h1>
+    <p class="hint">Captura la pestaña activa y envía sus imágenes al lector local.</p>
+    <label for="endpoint">Dirección del lector</label>
+    <input id="endpoint" type="url" value="http://127.0.0.1:39872/frame">
+    <label for="token">Token de OroCopy</label>
+    <input id="token" type="password" autocomplete="off" placeholder="Pégalo desde Vincular Chrome">
+    <button id="select" class="secondary select">Seleccionar zona en esta pestaña</button>
+    <div id="crop" class="crop">Zona: no seleccionada</div>
+    <div class="buttons">
+      <button id="start">Capturar esta pestaña</button>
+      <button id="stop" class="secondary">Detener</button>
+    </div>
+    <div id="status" role="status">Preparado</div>
+    <p class="foot">Deja el lector local en modo Pestaña Chrome e inicia la lectura antes de capturar.</p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
