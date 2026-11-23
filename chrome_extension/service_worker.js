@@ -9,6 +9,10 @@ async function ensureOffscreenDocument() {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // Messages addressed to the offscreen document are broadcast to extension
+  // contexts. Ignore them here so START_CAPTURE is not forwarded recursively.
+  if (message?.target === "offscreen") return;
+
   if (message?.type === "REGION_SELECTED") {
     chrome.storage.local.set({ crop: message.crop, cropTabId: _sender.tab?.id,
                                cropTabTitle: message.title || "Pestaña capturada" });
