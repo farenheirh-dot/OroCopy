@@ -52,6 +52,8 @@ GREEN = "#57d99a"
 RED = "#ff7777"
 OCR_FRAME_INTERVAL = 0.45
 OCR_STABLE_SAMPLES = 3
+OCR_SINGLE_VARIANT_SAMPLES = 6
+OCR_SINGLE_VARIANT_MIN_CONFIDENCE = 55
 
 
 def app_data_dir() -> Path:
@@ -282,6 +284,7 @@ class ScreenObserver:
         self.worker: threading.Thread | None = None
         self.last_candidate: tuple[int, int] | None = None
         self.candidate_repeats = 0
+        self.candidate_required = OCR_STABLE_SAMPLES
         self.stable_counts: tuple[int, int] | None = None
         self.last_photo = None
         self.copy_engine = CopyExecution() if CopyExecution is not None else None
@@ -406,6 +409,7 @@ class ScreenObserver:
         pytesseract.pytesseract.tesseract_cmd = find_tesseract()
         self.last_candidate = None
         self.candidate_repeats = 0
+        self.candidate_required = OCR_STABLE_SAMPLES
         self.stable_counts = None
         self.buy_var.set("COMPRAS: —")
         self.sell_var.set("VENTAS: —")
@@ -453,6 +457,7 @@ class ScreenObserver:
             ("detalle", sharpened, 11),
         )
         votes: dict[tuple[int, int], int] = {}
+        confidences: dict[tuple[int, int], list[float]] = {}
         diagnostics = []
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         for name, variant, psm in variants:
@@ -464,12 +469,35 @@ class ScreenObserver:
                 output_type=pytesseract.Output.DICT)
             words = [str(word).strip() for word in data["text"] if str(word).strip()]
             recognized = parse_counts(" ".join(words), data)
-            diagnostics.append(f"{name}={recognized if recognized is not None else '?'}")
+            digit_confidences = []
+            for word, raw_confidence in zip(data["text"], data.get("conf", [])):
+                word = str(word).strip()
+                if not re.fullmatch(r"\d{1,3}", word) or int(word) > 200:
+                    continue
+                try:
+                    confidence = float(raw_confidence)
+                except (TypeError, ValueError):
+                    continue
+                if confidence >= 0:
+                    digit_confidences.append(confidence)
+            digit_confidence = min(digit_confidences) if digit_confidences else 0.0
+            shown = recognized if recognized is not None else "?"
+            diagnostics.append(f"{name}={shown} ({digit_confidence:.0f}%)")
             if recognized is not None:
                 votes[recognized] = votes.get(recognized, 0) + 1
+                confidences.setdefault(recognized, []).append(digit_confidence)
 
         consensus = max(votes, key=votes.get) if votes else None
         agreement = votes.get(consensus, 0) if consensus is not None else 0
+        if agreement >= 2:
+            return " · ".join(diagnostics), consensus, agreement
+
+        # If only one image pipeline can read a small/pixelated counter, allow it
+        # only with a credible digit score and a longer temporal confirmation.
+        if len(votes) == 1 and agreement == 1:
+            score = confidences[consensus][0]
+            if score >= OCR_SINGLE_VARIANT_MIN_CONFIDENCE:
+                return " · ".join(diagnostics), consensus, 1
         if agreement < 2:
             consensus = None
         return " · ".join(diagnostics), consensus, agreement
@@ -518,6 +546,7 @@ class ScreenObserver:
             self.status_var.set("Lectura dudosa · las variantes no coinciden; conservo el último conteo")
             self.last_candidate = None
             self.candidate_repeats = 0
+            self.candidate_required = OCR_STABLE_SAMPLES
             return
         had_ocr_failure = self.ocr_failure_since is not None
         self.ocr_failure_since = None
@@ -526,16 +555,22 @@ class ScreenObserver:
             self._publish_state()
         if counts == self.last_candidate:
             self.candidate_repeats += 1
+            required = (OCR_SINGLE_VARIANT_SAMPLES if agreement == 1
+                        else OCR_STABLE_SAMPLES)
+            self.candidate_required = min(self.candidate_required, required)
         else:
             self.last_candidate = counts
             self.candidate_repeats = 1
-        if self.candidate_repeats < OCR_STABLE_SAMPLES:
+            self.candidate_required = (OCR_SINGLE_VARIANT_SAMPLES if agreement == 1
+                                       else OCR_STABLE_SAMPLES)
+        if self.candidate_repeats < self.candidate_required:
             self.status_var.set(
-                f"Confirmando {self.candidate_repeats}/{OCR_STABLE_SAMPLES} · acuerdo OCR {agreement}/3…")
+                f"Confirmando {self.candidate_repeats}/{self.candidate_required} · acuerdo OCR {agreement}/3…")
             return
         self.buy_var.set(f"COMPRAS: {counts[0]}")
         self.sell_var.set(f"VENTAS: {counts[1]}")
         if counts == self.stable_counts:
+            self.candidate_required = OCR_STABLE_SAMPLES
             self.status_var.set(
                 f"Lectura confirmada · sin cambios · acuerdo OCR {agreement}/3")
             self._publish_state()
