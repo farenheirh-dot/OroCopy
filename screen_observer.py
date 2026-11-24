@@ -859,25 +859,12 @@ class ScreenObserver:
             self.copy_status = "Conteo ambiguo · compras y ventas simultáneas"
             self._publish_state()
             return
-        if self.copy_engine is None:
-            self.copy_status = "MT5 no disponible · copia no armada"
-            self._publish_state()
-            return
         try:
             symbol, volume_text = load_copy_defaults()
             volume = float(str(volume_text).replace(",", "."))
             if volume <= 0:
                 raise ValueError("El lote debe ser mayor que cero")
-            account = self.copy_engine.inspect_demo(symbol)
-            side_count = f"{buys} BUY" if buys else f"{sells} SELL" if sells else "0 posiciones"
-            warning = (
-                f"{account}\n{symbol} · lote {volume:g} por orden\n"
-                f"Conteo estable: {side_count}.\n\n"
-                "Las entradas se copiarán según el conteo visible. No llevan SL/TP inicial. "
-                "¿Armar la copia DEMO?")
-            if messagebox.askyesno("Confirmar copia DEMO", warning, parent=self.root,
-                                   icon="warning"):
-                self._arm_copy(volume, symbol)
+            self._arm_copy(volume, symbol)
         except Exception as exc:
             self.copy_status = f"Copia bloqueada · {exc}"
             self._publish_state()
