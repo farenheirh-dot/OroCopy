@@ -11,7 +11,6 @@ except ImportError:
 
 
 COPY_MAGIC = 71212611
-MAX_COPY_POSITIONS_PER_SIDE = 10
 
 
 class CopyExecution:
@@ -149,9 +148,8 @@ class CopyExecution:
         check_cancelled()
         _account, info = self._connect_demo(symbol)
         buy_target, sell_target = map(int, target)
-        if not (0 <= buy_target <= MAX_COPY_POSITIONS_PER_SIDE and
-                0 <= sell_target <= MAX_COPY_POSITIONS_PER_SIDE):
-            raise RuntimeError(f"Límite de copia: máximo {MAX_COPY_POSITIONS_PER_SIDE} por sentido.")
+        if buy_target < 0 or sell_target < 0:
+            raise RuntimeError("El conteo de posiciones no puede ser negativo.")
         if buy_target and sell_target:
             raise RuntimeError("El lector detectó compras y ventas simultáneas; revisa el recorte antes de copiar.")
         if not (float(info.volume_min) <= volume <= float(info.volume_max)):

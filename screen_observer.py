@@ -362,7 +362,7 @@ class ScreenObserver:
         self.copy_status = "Desarmada · no envía órdenes"
         self.copy_closed_total = 0
         self.copied_counts = (0, 0)
-        self.ocr_failure_since: float | None = None
+        self.ocr_failure_active = False
         self.copy_symbol, default_volume = load_copy_defaults()
         try:
             self.copy_volume = float(str(default_volume).replace(",", "."))
@@ -737,8 +737,8 @@ class ScreenObserver:
             self.candidate_repeats = 0
             self.candidate_required = OCR_STABLE_SAMPLES
             return
-        had_ocr_failure = self.ocr_failure_since is not None
-        self.ocr_failure_since = None
+        had_ocr_failure = self.ocr_failure_active
+        self.ocr_failure_active = False
         if had_ocr_failure and self.copy_active:
             self.copy_status = "Lectura recuperada · la copia continúa activa"
             self._publish_state()
@@ -864,7 +864,7 @@ class ScreenObserver:
             return
         self.copy_active = True
         self.copy_cancel_event.clear()
-        self.ocr_failure_since = None
+        self.ocr_failure_active = False
         self.copy_last_synced = None
         self.copy_status = f"Armada · {account} · {self.copy_symbol}"
         self._publish_state()
@@ -883,18 +883,10 @@ class ScreenObserver:
     def _handle_ocr_failure(self, detail: str) -> None:
         if not self.copy_active:
             return
-        now = time.monotonic()
-        if self.ocr_failure_since is None:
-            self.ocr_failure_since = now
-        elapsed = now - self.ocr_failure_since
-        remaining = max(0, int(30 - elapsed + 0.999))
-        if elapsed >= 30:
-            self._disarm_copy(
-                "Sin lectura continua durante 30 s; copia pausada. Revisa las posiciones abiertas en MT5.")
-        else:
-            self.copy_status = (f"Lectura interrumpida ({detail}); esperando {remaining} s "
-                                "antes de pausar. Posiciones abiertas siguen activas.")
-            self._publish_state()
+        self.ocr_failure_active = True
+        self.copy_status = (f"Lectura interrumpida ({detail}); copia sigue armada. "
+                            "Revisa las posiciones abiertas en MT5.")
+        self._publish_state()
 
     def _queue_copy_target(self, target: tuple[int, int]) -> None:
         if not self.copy_active:
