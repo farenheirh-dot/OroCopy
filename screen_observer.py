@@ -59,6 +59,7 @@ OCR_FRAME_INTERVAL = 0.45
 OCR_STABLE_SAMPLES = 3
 OCR_SINGLE_VARIANT_SAMPLES = 3
 OCR_SINGLE_VARIANT_MIN_CONFIDENCE = 55
+DEFAULT_REGION = {"monitor": 1, "left": 469, "top": 332, "width": 303, "height": 37}
 
 
 def app_data_dir() -> Path:
@@ -81,7 +82,7 @@ def load_region() -> dict | None:
             return loaded
     except (OSError, ValueError, TypeError):
         pass
-    return None
+    return dict(DEFAULT_REGION)
 
 
 def save_region(region: dict) -> None:
@@ -332,6 +333,7 @@ class ScreenObserver:
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.region = load_region()
+        self.saved_region = dict(self.region)
         self.running = False
         self.stop_event = threading.Event()
         self.results: queue.Queue = queue.Queue(maxsize=2)
@@ -387,6 +389,14 @@ class ScreenObserver:
                                          self.stop_button, self.copy_button)):
             button.configure(font=("Segoe UI", 8, "bold"), padx=4, pady=3)
             button.grid(row=0, column=column, sticky="ew", padx=2)
+        self.load_template_button = self._button(
+            controls, "PLANTILLA", self.load_template, "#34424f")
+        self.save_template_button = self._button(
+            controls, "GUARDAR PLANTILLA", self.save_template, "#275c4b")
+        self.load_template_button.configure(font=("Segoe UI", 8, "bold"), padx=4, pady=3)
+        self.save_template_button.configure(font=("Segoe UI", 8, "bold"), padx=4, pady=3)
+        self.load_template_button.grid(row=1, column=0, columnspan=2, sticky="ew", padx=2, pady=(2, 0))
+        self.save_template_button.grid(row=1, column=2, columnspan=2, sticky="ew", padx=2, pady=(2, 0))
 
         source_controls = tk.Frame(self.root, bg=BG)
         source_controls.pack(fill="x", padx=12, pady=(0, 3))
@@ -503,8 +513,35 @@ class ScreenObserver:
         if not self.region:
             return "Pantalla y zona: sin seleccionar"
         r = self.region
+        saved = getattr(self, "saved_region", None)
+        marker = "" if saved is None or r == saved else " · sin guardar"
         return (f"Pantalla {r.get('monitor', 1)} · zona x={r['left']} y={r['top']} · "
-                f"{r['width']}×{r['height']} px")
+                f"{r['width']}×{r['height']} px{marker}")
+
+    def load_template(self) -> None:
+        if self.running:
+            self.status_var.set("Detén la lectura antes de cargar una plantilla")
+            return
+        self.saved_region = load_region()
+        self.region = dict(self.saved_region)
+        self.region_var.set(self._region_text())
+        self.status_var.set("Plantilla cargada. Inicia lectura o ajusta la zona con ZONA.")
+
+    def save_template(self) -> None:
+        if self.running:
+            self.status_var.set("Detén la lectura antes de guardar una plantilla")
+            return
+        if not self.region:
+            self.status_var.set("Selecciona una zona antes de guardar la plantilla")
+            return
+        try:
+            save_region(self.region)
+        except OSError as exc:
+            self.status_var.set(f"No se pudo guardar la plantilla: {exc}")
+            return
+        self.saved_region = dict(self.region)
+        self.region_var.set(self._region_text())
+        self.status_var.set("Plantilla guardada con la pantalla, posición y tamaño actuales.")
 
     def select_region(self) -> None:
         if self.running:
@@ -527,11 +564,10 @@ class ScreenObserver:
 
     def set_region(self, region: dict) -> None:
         self.region = region
-        save_region(region)
         self.region_var.set(self._region_text())
         self.root.deiconify()
         self.root.lift()
-        self.status_var.set("Zona guardada. Asegúrate de incluir los rótulos y sus cantidades.")
+        self.status_var.set("Zona ajustada. Pulsa GUARDAR PLANTILLA para conservarla.")
 
     def start_reading(self) -> None:
         self.capture_source = self.source_var.get()
