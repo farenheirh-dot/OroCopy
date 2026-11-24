@@ -358,6 +358,7 @@ class ScreenObserver:
         self.copy_busy = False
         self.copy_worker_target: tuple[int, int] | None = None
         self.copy_pending_target: tuple[int, int] | None = None
+        self.copy_pending_emergency_close = False
         self.copy_last_synced: tuple[int, int] | None = None
         self.copy_results: queue.Queue = queue.Queue()
         self.copy_cancel_event = threading.Event()
@@ -939,7 +940,7 @@ class ScreenObserver:
                 "Lectura dudosa durante 10 s · cerrando posiciones copiadas; "
                 "la copia sigue armada.")
             self._publish_state()
-            self._queue_copy_target((0, 0))
+            self._queue_copy_target((0, 0), emergency_close=True)
             self._log_copy("AUTO_CLOSE_UNCERTAIN", (0, 0), self.copy_status)
             return
         if self.uncertain_close_triggered:
@@ -949,38 +950,48 @@ class ScreenObserver:
                             f"{seconds_left} s si continúa.")
         self._publish_state()
 
-    def _queue_copy_target(self, target: tuple[int, int]) -> None:
+    def _queue_copy_target(self, target: tuple[int, int], emergency_close: bool = False) -> None:
         if not self.copy_active:
             return
         if self.copy_busy:
             self.copy_pending_target = target
+            self.copy_pending_emergency_close = emergency_close
             return
-        if target == self.copy_last_synced:
+        if target == self.copy_last_synced and not emergency_close:
             return
         self.copy_busy = True
         self.copy_worker_target = target
-        threading.Thread(target=self._copy_worker, args=(target,), daemon=True,
+        threading.Thread(target=self._copy_worker, args=(target, emergency_close), daemon=True,
                          name="OroCopyMT5Sync").start()
 
-    def _copy_worker(self, target: tuple[int, int]) -> None:
+    def _copy_worker(self, target: tuple[int, int], emergency_close: bool = False) -> None:
         before = None
         try:
             before = self.copy_engine.positions_count(self.copy_symbol)
-            summary = self.copy_engine.reconcile(
-                self.copy_symbol, self.copy_volume, target, self.copy_cancel_event)
-            after = self.copy_engine.positions_count(self.copy_symbol)
-            self.copy_results.put((target, summary, None, before, after))
+        except Exception:
+            pass
+        try:
+            if emergency_close:
+                summary = self.copy_engine.close_all_with_be_fallback(self.copy_symbol)
+            else:
+                summary = self.copy_engine.reconcile(
+                    self.copy_symbol, self.copy_volume, target, self.copy_cancel_event)
+            try:
+                after = self.copy_engine.positions_count(self.copy_symbol)
+            except Exception:
+                after = None
+            self.copy_results.put((target, summary, None, before, after, emergency_close))
         except Exception as exc:
             try:
                 after = self.copy_engine.positions_count(self.copy_symbol)
             except Exception:
                 after = None
-            self.copy_results.put((target, None, str(exc), before, after))
+            self.copy_results.put((target, None, str(exc), before, after, emergency_close))
 
     def _poll_copy_results(self) -> None:
         try:
             while True:
-                target, summary, error, before, after = self.copy_results.get_nowait()
+                target, summary, error, before, after, emergency_close = self.copy_results.get_nowait()
                 self.copy_busy = False
                 self.copy_worker_target = None
                 if error:
@@ -995,7 +1006,7 @@ class ScreenObserver:
                             f"Cierre por lectura dudosa incompleto: {error[:100]}. "
                             f"{armed_text}; revisa MT5.")
                         self._publish_state()
-                        if target == (0, 0):
+                        if emergency_close:
                             self.uncertain_close_triggered = False
                             recovery_target = self.uncertain_recovery_target
                             self.uncertain_recovery_target = None
@@ -1004,8 +1015,12 @@ class ScreenObserver:
                                 self._queue_copy_target(recovery_target)
                         else:
                             pending = self.copy_pending_target
+                            pending_emergency_close = self.copy_pending_emergency_close
                             self.copy_pending_target = None
-                            self._queue_copy_target(pending or (0, 0))
+                            self.copy_pending_emergency_close = False
+                            self._queue_copy_target(pending or (0, 0),
+                                                    emergency_close=(pending_emergency_close or
+                                                                     pending is None))
                     else:
                         self._disarm_copy(f"Error de copia; pausada. Revisa MT5: {error[:120]}")
                 else:
@@ -1013,12 +1028,10 @@ class ScreenObserver:
                     if before is not None and after is not None:
                         self.copy_closed_total += max(0, before[0] - after[0]) + max(0, before[1] - after[1])
                     self.copied_counts = after or target
-                    if target == (0, 0) and self.uncertain_close_triggered:
+                    if emergency_close and self.uncertain_close_triggered:
                         armed_text = ("la copia sigue armada" if self.copy_active else
                                       "la copia está pausada")
-                        self.copy_status = (
-                            "Lectura dudosa durante 10 s · posiciones copiadas cerradas; "
-                            f"{armed_text}.")
+                        self.copy_status = f"{summary} {armed_text}."
                         self.uncertain_close_triggered = False
                         recovery_target = self.uncertain_recovery_target
                         self.uncertain_recovery_target = None
@@ -1031,8 +1044,10 @@ class ScreenObserver:
                     self._log_copy("COPY_SYNC", target, summary)
                     if self.copy_active and self.copy_pending_target is not None:
                         pending = self.copy_pending_target
+                        pending_emergency_close = self.copy_pending_emergency_close
                         self.copy_pending_target = None
-                        self._queue_copy_target(pending)
+                        self.copy_pending_emergency_close = False
+                        self._queue_copy_target(pending, emergency_close=pending_emergency_close)
         except queue.Empty:
             pass
         if self.root.winfo_exists():

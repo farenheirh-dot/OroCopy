@@ -116,27 +116,68 @@ class CopyExecution:
         for position in positions:
             if position.type != kind:
                 continue
-            entry = float(position.price_open)
-            current_sl = float(position.sl or 0.0)
-            already_be = ((side == "buy" and current_sl >= entry) or
-                          (side == "sell" and current_sl > 0 and current_sl <= entry))
-            if already_be:
-                continue
-            request = {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "symbol": symbol,
-                "position": position.ticket,
-                "sl": entry,
-                "tp": float(position.tp or 0.0),
-                "magic": COPY_MAGIC,
-                "comment": "OroCopy breakeven",
-            }
-            result = mt5.order_send(request)
-            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-                detail = str(mt5.last_error()) if result is None else f"{result.retcode}: {result.comment}"
-                raise RuntimeError(f"BE de ticket {position.ticket} rechazado: {detail}")
-            changed += 1
+            if self._set_position_to_be(position):
+                changed += 1
         return changed
+
+    def _set_position_to_be(self, position) -> bool:
+        entry = float(position.price_open)
+        current_sl = float(position.sl or 0.0)
+        is_buy = position.type == mt5.POSITION_TYPE_BUY
+        already_be = ((is_buy and current_sl >= entry) or
+                      (not is_buy and current_sl > 0 and current_sl <= entry))
+        if already_be:
+            return False
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": position.symbol,
+            "position": position.ticket,
+            "sl": entry,
+            "tp": float(position.tp or 0.0),
+            "magic": COPY_MAGIC,
+            "comment": "OroCopy breakeven",
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            detail = str(mt5.last_error()) if result is None else f"{result.retcode}: {result.comment}"
+            raise RuntimeError(f"BE de ticket {position.ticket} rechazado: {detail}")
+        return True
+
+    def close_all_with_be_fallback(self, symbol: str) -> str:
+        """Try direct closes first, then protect any remaining OroCopy tickets at BE."""
+        self._connect_demo(symbol)
+        positions = sorted(self._copy_positions(symbol),
+                           key=lambda p: (getattr(p, "time", 0), p.ticket))
+        if not positions:
+            return "Cierre directo completo · no había posiciones copiadas."
+
+        close_errors = []
+        for position in positions:
+            try:
+                self._close(position)
+            except Exception as exc:
+                close_errors.append(f"ticket {position.ticket}: {exc}")
+
+        remaining = self._copy_positions(symbol)
+        closed_count = len(positions) - len(remaining)
+        if not remaining:
+            return f"Cierre directo completo · cerró {closed_count} posiciones."
+
+        protected = 0
+        be_errors = []
+        for position in remaining:
+            try:
+                self._set_position_to_be(position)
+                protected += 1
+            except Exception as exc:
+                be_errors.append(f"ticket {position.ticket}: {exc}")
+
+        close_reason = close_errors[0] if close_errors else "quedaron tickets abiertos"
+        result = (f"Cierre directo incompleto ({close_reason}); BE aplicado a "
+                  f"{protected}/{len(remaining)} posiciones restantes.")
+        if be_errors:
+            result += " Fallos BE: " + "; ".join(be_errors[:3])
+        return result
 
     def reconcile(self, symbol: str, volume: float, target: tuple[int, int],
                   cancel_event: threading.Event | None = None) -> str:
