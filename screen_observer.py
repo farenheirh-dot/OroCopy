@@ -59,7 +59,7 @@ OCR_FRAME_INTERVAL = 0.45
 OCR_STABLE_SAMPLES = 3
 OCR_SINGLE_VARIANT_SAMPLES = 3
 OCR_SINGLE_VARIANT_MIN_CONFIDENCE = 55
-OCR_DOUBT_CLOSE_SECONDS = 10
+OCR_DOUBT_CLOSE_SECONDS = 60
 DEFAULT_REGION = {"monitor": 1, "left": 469, "top": 332, "width": 303, "height": 37}
 
 
@@ -937,7 +937,7 @@ class ScreenObserver:
             # Force reconciliation to zero even if the last confirmed count was already zero.
             self.copy_last_synced = None
             self.copy_status = (
-                "Lectura dudosa durante 10 s · cerrando posiciones copiadas; "
+                "Lectura dudosa durante 60 s · cerrando posiciones copiadas; "
                 "la copia sigue armada.")
             self._publish_state()
             self._queue_copy_target((0, 0), emergency_close=True)
