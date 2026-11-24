@@ -43,9 +43,9 @@ except ImportError:
     pytesseract = None
 
 try:
-    from PIL import Image, ImageFilter, ImageOps, ImageStat, ImageTk
+    from PIL import Image, ImageChops, ImageFilter, ImageOps, ImageTk
 except ImportError:
-    Image = ImageFilter = ImageOps = ImageStat = ImageTk = None
+    Image = ImageChops = ImageFilter = ImageOps = ImageTk = None
 
 
 APP_NAME = "OroCopy"
@@ -667,13 +667,13 @@ class ScreenObserver:
     def _recognize_counts(self, image):
         """Vote across different image/OCR settings for the fixed count panel."""
         gray = ImageOps.autocontrast(ImageOps.grayscale(image))
-        mean = ImageStat.Stat(gray).mean[0]
-        threshold = int(max(105, min(205, mean)))
-        binary = gray.point(lambda value: 255 if value >= threshold else 0)
+        local_mean = gray.filter(ImageFilter.BoxBlur(radius=4))
+        adaptive = ImageChops.subtract(gray, local_mean, offset=128).point(
+            lambda value: 255 if value > 134 else 0)
         sharpened = gray.filter(ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=2))
         variants = (
             ("gris", gray, 6),
-            ("contraste", binary, 6),
+            ("adaptativo", adaptive, 6),
             ("detalle", sharpened, 11),
         )
         votes: dict[tuple[int, int], int] = {}
