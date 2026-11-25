@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 import os
@@ -344,6 +345,9 @@ class ScreenObserver:
         self.stop_event = threading.Event()
         self.results: queue.Queue = queue.Queue(maxsize=2)
         self.worker: threading.Thread | None = None
+        # Tesseract runs as a separate process, so two workers can OCR the
+        # independent BUY/SELL regions concurrently without blocking Tk.
+        self.ocr_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="OroCopyOCR")
         self.capture_source = "monitor"
         self.chrome_frames: queue.Queue = queue.Queue(maxsize=2)
         self.chrome_last_frame_at = 0.0
@@ -703,8 +707,10 @@ class ScreenObserver:
 
     def _recognize_counts(self, images):
         """Read BUY and SELL independently, so either title may be obscured."""
-        buy_diagnostics, buy_count, buy_agreement = self._recognize_side_count(images[0])
-        sell_diagnostics, sell_count, sell_agreement = self._recognize_side_count(images[1])
+        buy_future = self.ocr_executor.submit(self._recognize_side_count, images[0])
+        sell_future = self.ocr_executor.submit(self._recognize_side_count, images[1])
+        buy_diagnostics, buy_count, buy_agreement = buy_future.result()
+        sell_diagnostics, sell_count, sell_agreement = sell_future.result()
         diagnostics = f"COMPRAS[{buy_diagnostics}] · VENTAS[{sell_diagnostics}]"
         if buy_count is None or sell_count is None:
             return diagnostics, None, min(buy_agreement, sell_agreement)
@@ -1173,6 +1179,7 @@ class ScreenObserver:
         self._disarm_copy("Ventana cerrada; copia desarmada. Posiciones copiadas siguen abiertas.")
         self.stop_event.set()
         self.running = False
+        self.ocr_executor.shutdown(wait=False, cancel_futures=True)
         self._publish_state()
         if self.chrome_server is not None:
             self.chrome_server.close()
