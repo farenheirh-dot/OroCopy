@@ -14,7 +14,7 @@ COPY_MAGIC = 71212611
 
 
 class CopyExecution:
-    def _connect_demo(self, symbol: str):
+    def _connect_demo(self, symbol: str | None):
         if mt5 is None:
             raise RuntimeError("Falta el paquete MetaTrader5; ejecuta setup.ps1.")
         terminal = mt5.terminal_info()
@@ -33,6 +33,8 @@ class CopyExecution:
         hedging = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", None)
         if hedging is not None and account.margin_mode != hedging:
             raise RuntimeError("La cuenta no es Hedge; no se puede espejar el conteo de tickets.")
+        if symbol is None:
+            return account, None
         info = mt5.symbol_info(symbol)
         if info is None:
             raise RuntimeError(f"No existe el símbolo {symbol} en MT5.")
@@ -82,7 +84,8 @@ class CopyExecution:
             detail = str(mt5.last_error()) if result is None else f"{result.retcode}: {result.comment}"
             raise RuntimeError(f"Apertura {side.upper()} rechazada: {detail}")
 
-    def _close(self, position) -> None:
+    def _close(self, position, magic: int = COPY_MAGIC,
+               comment: str = "OroCopy sync close") -> None:
         symbol = position.symbol
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
@@ -98,8 +101,8 @@ class CopyExecution:
             "type": order_type,
             "price": price,
             "deviation": 30,
-            "magic": COPY_MAGIC,
-            "comment": "OroCopy sync close",
+            "magic": magic,
+            "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -108,6 +111,34 @@ class CopyExecution:
         if result is None or result.retcode not in accepted:
             detail = str(mt5.last_error()) if result is None else f"{result.retcode}: {result.comment}"
             raise RuntimeError(f"Cierre de ticket {position.ticket} rechazado: {detail}")
+
+    def close_all_positions_for_uncertain_read(self, symbol: str) -> str:
+        """Close every open position on the connected DEMO account."""
+        self._connect_demo(None)
+        positions = mt5.positions_get()
+        if positions is None:
+            raise RuntimeError(f"No se pudieron consultar posiciones MT5: {mt5.last_error()}")
+        positions = sorted(positions, key=lambda p: (getattr(p, "time", 0), p.ticket))
+        if not positions:
+            return "Cierre automático completo · no había posiciones abiertas en MT5."
+
+        close_errors = []
+        for position in positions:
+            try:
+                self._close(position, magic=0, comment="OroCopy lectura dudosa")
+            except Exception as exc:
+                close_errors.append(f"{position.symbol} ticket {position.ticket}: {exc}")
+
+        remaining = mt5.positions_get()
+        if remaining is None:
+            raise RuntimeError(f"No se pudo verificar el cierre en MT5: {mt5.last_error()}")
+        closed_tickets = {p.ticket for p in positions} - {p.ticket for p in remaining}
+        if remaining:
+            reason = "; ".join(close_errors[:3]) or "quedaron posiciones abiertas"
+            raise RuntimeError(
+                f"Cierre incompleto: cerró {len(closed_tickets)}/{len(positions)} posiciones. "
+                f"{reason}")
+        return f"Cierre automático completo · cerró {len(closed_tickets)} posiciones de MT5."
 
     def _move_remaining_to_be(self, symbol: str, side: str) -> int:
         positions = self._copy_positions(symbol)

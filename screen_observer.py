@@ -378,6 +378,7 @@ class ScreenObserver:
         self.ocr_failure_active = False
         self.uncertain_since: float | None = None
         self.uncertain_close_triggered = False
+        self.uncertain_close_completed = False
         self.suppress_reopen_until_signal_change = False
         self.uncertain_recovery_target: tuple[int, int] | None = None
         self.copy_symbol, default_volume = load_copy_defaults()
@@ -804,11 +805,11 @@ class ScreenObserver:
 
     def _update_counts(self, counts: tuple[int, int] | None, agreement: int = 0) -> None:
         if counts is None:
+            self.status_var.set("Lectura dudosa · las variantes no coinciden; conservo el último conteo")
             self._handle_ocr_failure("No se reconocen COMPRAS/VENTAS")
             if self.stable_counts is None:
                 self.buy_var.set("COMPRAS: ?")
                 self.sell_var.set("VENTAS: ?")
-            self.status_var.set("Lectura dudosa · las variantes no coinciden; conservo el último conteo")
             self.last_candidate = None
             self.candidate_repeats = 0
             self.candidate_required = OCR_STABLE_SAMPLES
@@ -816,6 +817,7 @@ class ScreenObserver:
         had_ocr_failure = self.ocr_failure_active
         self.ocr_failure_active = False
         self.uncertain_since = None
+        self.uncertain_close_completed = False
         if had_ocr_failure and self.copy_active:
             self.copy_status = "Lectura recuperada · la copia continúa activa"
             self._publish_state()
@@ -937,6 +939,7 @@ class ScreenObserver:
         self.ocr_failure_active = False
         self.uncertain_since = None
         self.uncertain_close_triggered = False
+        self.uncertain_close_completed = False
         self.suppress_reopen_until_signal_change = False
         self.uncertain_recovery_target = None
         self.copy_last_synced = None
@@ -962,24 +965,36 @@ class ScreenObserver:
         if self.uncertain_since is None:
             self.uncertain_since = now
         elapsed = now - self.uncertain_since
-        if elapsed >= OCR_DOUBT_CLOSE_SECONDS and not self.uncertain_close_triggered:
+        if (elapsed >= OCR_DOUBT_CLOSE_SECONDS and
+                not self.uncertain_close_triggered and
+                not self.uncertain_close_completed):
             self.uncertain_close_triggered = True
             self.suppress_reopen_until_signal_change = True
             self.uncertain_recovery_target = None
-            # Force reconciliation to zero even if the last confirmed count was already zero.
             self.copy_last_synced = None
             self.copy_status = (
-                "Lectura dudosa durante 60 s · cerrando posiciones copiadas; "
+                "Cierre automático por lectura dudosa · cerrando todas las posiciones de MT5; "
                 "la copia sigue armada.")
+            self.status_var.set(
+                "Lectura dudosa durante 60 s · cerrando todas las posiciones de MT5; "
+                "la copia sigue activa.")
             self._publish_state()
             self._queue_copy_target((0, 0), emergency_close=True)
             self._log_copy("AUTO_CLOSE_UNCERTAIN", (0, 0), self.copy_status)
             return
         if self.uncertain_close_triggered:
+            self.status_var.set(self.copy_status)
+            return
+        if self.uncertain_close_completed:
+            self.copy_status = (
+                "Lectura dudosa · cierre realizado; la copia sigue armada.")
+            self.status_var.set(self.copy_status)
+            self._publish_state()
             return
         seconds_left = max(0, int(OCR_DOUBT_CLOSE_SECONDS - elapsed + 0.999))
-        self.copy_status = (f"Lectura dudosa ({detail}) · cierre automático en "
-                            f"{seconds_left} s si continúa.")
+        self.copy_status = (f"Cierre automático en {seconds_left} s · "
+                            f"lectura dudosa ({detail}).")
+        self.status_var.set(self.copy_status)
         self._publish_state()
 
     def _queue_copy_target(self, target: tuple[int, int], emergency_close: bool = False) -> None:
@@ -1004,7 +1019,8 @@ class ScreenObserver:
             pass
         try:
             if emergency_close:
-                summary = self.copy_engine.close_all_with_be_fallback(self.copy_symbol)
+                summary = self.copy_engine.close_all_positions_for_uncertain_read(
+                    self.copy_symbol)
             else:
                 summary = self.copy_engine.reconcile(
                     self.copy_symbol, self.copy_volume, target, self.copy_cancel_event)
@@ -1037,6 +1053,7 @@ class ScreenObserver:
                         self.copy_status = (
                             f"Cierre por lectura dudosa incompleto: {error[:100]}. "
                             f"{armed_text}; revisa MT5.")
+                        self.status_var.set(self.copy_status)
                         self._publish_state()
                         if emergency_close:
                             self.uncertain_close_triggered = False
@@ -1065,6 +1082,7 @@ class ScreenObserver:
                                       "la copia está pausada")
                         self.copy_status = f"{summary} {armed_text}."
                         self.uncertain_close_triggered = False
+                        self.uncertain_close_completed = self.ocr_failure_active
                         recovery_target = self.uncertain_recovery_target
                         self.uncertain_recovery_target = None
                         if recovery_target is not None and self.copy_active:
@@ -1072,6 +1090,8 @@ class ScreenObserver:
                             self._queue_copy_target(recovery_target)
                     else:
                         self.copy_status = summary
+                    if emergency_close:
+                        self.status_var.set(self.copy_status)
                     self._publish_state()
                     self._log_copy("COPY_SYNC", target, summary)
                     if self.copy_active and self.copy_pending_target is not None:

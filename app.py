@@ -506,7 +506,8 @@ class GoldControl:
             state_status = str(state.get("status", "")) if fresh else ""
             if (state_status and state_status != self.copy_last_status and
                     any(word in state_status.lower() for word in
-                        ("error", "bloqueada", "pausada", "ambigu", "sin lectura"))):
+                        ("error", "bloqueada", "pausada", "ambigu", "sin lectura",
+                         "lectura dudosa", "cierre automático"))):
                 self._set_feedback(state_status[:48], "#e0a34a")
             self.copy_last_status = state_status
         self._after(500, self._refresh_copy_state)
