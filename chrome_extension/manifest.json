@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OroCopy Tab Capture",
-  "version": "1.0.2",
-  "description": "Envía fotogramas de una pestaña elegida al lector local de OroCopy.",
+  "version": "1.1.0",
+  "description": "Lee por separado los contadores COMPRAS y VENTAS de una pestaña para OroCopy.",
   "permissions": ["activeTab", "tabCapture", "offscreen", "storage", "scripting"],
   "host_permissions": ["http://127.0.0.1:39872/*"],
   "background": { "service_worker": "service_worker.js" },

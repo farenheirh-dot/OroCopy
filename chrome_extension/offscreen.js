@@ -1,7 +1,7 @@
 let stream = null;
 let timer = null;
 let sending = false;
-let crop = null;
+let regions = null;
 
 const video = document.getElementById("capture");
 const canvas = document.getElementById("frame");
@@ -27,19 +27,42 @@ async function sendFrame(endpoint, token) {
     const width = video.videoWidth;
     const height = video.videoHeight;
     if (!width || !height) return;
-    const sx = Math.max(0, Math.floor(crop.x * width));
-    const sy = Math.max(0, Math.floor(crop.y * height));
-    const sw = Math.max(1, Math.min(width - sx, Math.ceil(crop.width * width)));
-    const sh = Math.max(1, Math.min(height - sy, Math.ceil(crop.height * height)));
-    canvas.width = sw;
-    canvas.height = sh;
+    const pixelRect = crop => {
+      if (!crop || crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 ||
+          crop.x + crop.width > 1 || crop.y + crop.height > 1) {
+        throw new Error("Las zonas de captura no son válidas.");
+      }
+      const x = Math.max(0, Math.floor(crop.x * width));
+      const y = Math.max(0, Math.floor(crop.y * height));
+      return {
+        x, y,
+        width: Math.max(1, Math.min(width - x, Math.ceil(crop.width * width))),
+        height: Math.max(1, Math.min(height - y, Math.ceil(crop.height * height)))
+      };
+    };
+    const buy = pixelRect(regions?.buy);
+    const sell = pixelRect(regions?.sell);
+    canvas.width = buy.width + sell.width;
+    canvas.height = Math.max(buy.height, sell.height);
     const context = canvas.getContext("2d", { alpha: false });
-    context.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(video, buy.x, buy.y, buy.width, buy.height,
+      0, 0, buy.width, buy.height);
+    context.drawImage(video, sell.x, sell.y, sell.width, sell.height,
+      buy.width, 0, sell.width, sell.height);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.86));
     if (!blob) return;
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "image/jpeg", "X-OroCopy-Token": token },
+      headers: {
+        "Content-Type": "image/jpeg",
+        "X-OroCopy-Token": token,
+        "X-OroCopy-Buy-Width": String(buy.width),
+        "X-OroCopy-Buy-Height": String(buy.height),
+        "X-OroCopy-Sell-Width": String(sell.width),
+        "X-OroCopy-Sell-Height": String(sell.height)
+      },
       body: blob,
       cache: "no-store"
     });
@@ -69,11 +92,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }
           }
         });
-        crop = message.crop;
-        if (!crop || crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 ||
-            crop.x + crop.width > 1 || crop.y + crop.height > 1) {
-          throw new Error("La zona de captura no es válida.");
-        }
+        regions = message.regions;
+        if (!regions?.buy || !regions?.sell) throw new Error("Selecciona las zonas COMPRAS y VENTAS.");
         const track = stream.getVideoTracks()[0];
         track.addEventListener("ended", () => stopCapture());
         video.srcObject = stream;

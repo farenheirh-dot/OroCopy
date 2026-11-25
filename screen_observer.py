@@ -73,21 +73,45 @@ def config_file() -> Path:
     return app_data_dir() / "observer.json"
 
 
-def load_region() -> dict | None:
+def _normalize_region(region: dict) -> dict:
+    loaded = {key: int(region[key]) for key in ("left", "top", "width", "height")}
+    loaded["monitor"] = max(1, int(region.get("monitor", 1)))
+    if loaded["width"] < 1 or loaded["height"] < 1:
+        raise ValueError("Capture areas must have positive dimensions")
+    return loaded
+
+
+def _split_legacy_region(region: dict) -> dict:
+    """Split the old combined strip: the expert template places SELL left, BUY right."""
+    combined = _normalize_region(region)
+    sell_width = combined["width"] // 2
+    buy_width = combined["width"] - sell_width
+    if min(sell_width, buy_width) < 40:
+        combined["width"] = max(40, combined["width"])
+        sell_width = combined["width"] // 2
+        buy_width = combined["width"] - sell_width
+    sell = {**combined, "width": sell_width}
+    buy = {**combined, "left": combined["left"] + sell_width, "width": buy_width}
+    return {"buy": buy, "sell": sell}
+
+
+def load_regions() -> dict:
     try:
         data = json.loads(config_file().read_text(encoding="utf-8"))
-        region = data.get("region")
-        if region and all(k in region for k in ("left", "top", "width", "height")):
-            loaded = {k: int(region[k]) for k in ("left", "top", "width", "height")}
-            loaded["monitor"] = max(1, int(region.get("monitor", 1)))
-            return loaded
+        regions = data.get("regions")
+        if isinstance(regions, dict) and all(side in regions for side in ("buy", "sell")):
+            return {side: _normalize_region(regions[side]) for side in ("buy", "sell")}
+        legacy = data.get("region")
+        if isinstance(legacy, dict):
+            return _split_legacy_region(legacy)
     except (OSError, ValueError, TypeError):
         pass
-    return dict(DEFAULT_REGION)
+    return _split_legacy_region(DEFAULT_REGION)
 
 
-def save_region(region: dict) -> None:
-    config_file().write_text(json.dumps({"region": region}, indent=2), encoding="utf-8")
+def save_regions(regions: dict) -> None:
+    normalized = {side: _normalize_region(regions[side]) for side in ("buy", "sell")}
+    config_file().write_text(json.dumps({"regions": normalized}, indent=2), encoding="utf-8")
 
 
 def load_copy_defaults() -> tuple[str, str]:
@@ -116,101 +140,74 @@ def find_tesseract() -> str | None:
     return next((str(path) for path in candidates if path.is_file()), None)
 
 
-def parse_counts(text: str, ocr_data: dict | None = None) -> tuple[int, int] | None:
-    """Read counts under their side headings, using OCR coordinates when available."""
+def parse_side_count(text: str, ocr_data: dict | None = None) -> tuple[int | None, float]:
+    """Read the POSICIONES count inside a preassigned BUY or SELL crop."""
     if ocr_data and ocr_data.get("text"):
         tokens = []
-        for i, raw in enumerate(ocr_data["text"]):
+        for index, raw in enumerate(ocr_data["text"]):
             word = str(raw).strip()
             if not word:
                 continue
+            try:
+                confidence = float(ocr_data.get("conf", [])[index])
+            except (IndexError, TypeError, ValueError):
+                confidence = 0.0
             tokens.append({
                 "word": word,
                 "norm": re.sub(r"[^A-Z]", "", word.upper()),
-                "left": int(ocr_data["left"][i]),
-                "top": int(ocr_data["top"][i]),
-                "width": int(ocr_data["width"][i]),
-                "height": int(ocr_data["height"][i]),
-                "line": (ocr_data["block_num"][i], ocr_data["par_num"][i],
-                         ocr_data["line_num"][i]),
+                "left": int(ocr_data["left"][index]),
+                "top": int(ocr_data["top"][index]),
+                "width": int(ocr_data["width"][index]),
+                "height": int(ocr_data["height"][index]),
+                "line": (ocr_data["block_num"][index], ocr_data["par_num"][index],
+                         ocr_data["line_num"][index]),
+                "confidence": confidence,
             })
-        side_specs = {
-            "buy": {"COMPRAS", "COMPRA", "BUY", "BUYS", "LONG"},
-            "sell": {"VENTAS", "VENTA", "SELL", "SELLS", "SHORT"},
-        }
-        anchors = {}
-        for side, names in side_specs.items():
-            matches = [t for t in tokens if t["norm"] in names]
-            if matches:
-                anchors[side] = min(matches, key=lambda t: t["top"])
-        if len(anchors) == 2:
-            boundary = ((anchors["buy"]["left"] + anchors["buy"]["width"] / 2) +
-                        (anchors["sell"]["left"] + anchors["sell"]["width"] / 2)) / 2
-        else:
-            boundary = None
+        number_tokens = [token for token in tokens
+                         if re.fullmatch(r"\d{1,3}", token["word"]) and
+                         0 <= int(token["word"]) <= 200]
+        labels = sorted((token for token in tokens if token["norm"].startswith("POSICION")),
+                        key=lambda token: token["top"])
+        for label in labels:
+            same_line = [token for token in number_tokens
+                         if token["line"] == label["line"] and
+                         token["left"] >= label["left"] + label["width"]]
+            if same_line:
+                token = min(same_line, key=lambda item: item["left"])
+                return int(token["word"]), token["confidence"]
+            nearby = [token for token in number_tokens
+                      if 0 <= token["top"] - label["top"] <= max(120, label["height"] * 4)]
+            if nearby:
+                token = min(nearby, key=lambda item: (item["top"], item["left"]))
+                return int(token["word"]), token["confidence"]
 
-        counts = {}
-        for side, anchor in anchors.items():
-            center_x = anchor["left"] + anchor["width"] / 2
-            center_y = anchor["top"] + anchor["height"] / 2
-
-            def in_column(token) -> bool:
-                token_x = token["left"] + token["width"] / 2
-                return (boundary is None or
-                        (token_x <= boundary if center_x <= boundary else token_x > boundary))
-
-            positions = [t for t in tokens
-                         if t["norm"].startswith("POSICION") and in_column(t) and
-                         0 <= t["top"] - center_y <= max(240, anchor["height"] * 6)]
-            value = None
-            for pos in sorted(positions, key=lambda t: t["top"]):
-                same_line = [t for t in tokens if t["line"] == pos["line"] and
-                             re.fullmatch(r"\d{1,3}", t["word"].strip()) and
-                             t["left"] >= pos["left"] + pos["width"] and in_column(t)]
-                if same_line:
-                    value = int(min(same_line, key=lambda t: t["left"])["word"])
-                    break
-                below = [t for t in tokens if re.fullmatch(r"\d{1,3}", t["word"].strip()) and
-                         in_column(t) and 0 <= t["top"] - pos["top"] <= max(120, pos["height"] * 4)]
-                if below:
-                    value = int(min(below, key=lambda t: t["top"])["word"])
-                    break
-            if value is None:
-                below = [t for t in tokens if re.fullmatch(r"\d{1,3}", t["word"].strip()) and
-                         in_column(t) and 0 < t["top"] - center_y <= max(180, anchor["height"] * 5)]
-                if below:
-                    value = int(min(below, key=lambda t: t["top"])["word"])
-            if value is not None and 0 <= value <= 200:
-                counts[side] = value
-        if "buy" in counts and "sell" in counts:
-            return counts["buy"], counts["sell"]
-
-    # Conservative fallback: each number must belong to text after its heading
-    # and before the other heading, so it cannot borrow the other side's count.
-    normalized = re.sub(r"\s+", " ", text.upper())
-    heading = re.compile(r"COMPRAS|COMPRA|BUYS?|LONG|VENTAS|VENTA|SELLS?|SHORT")
-    matches = list(heading.finditer(normalized))
-    segments = {}
-    for index, match in enumerate(matches):
-        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
-        label = match.group(0)
-        side = "buy" if label in {"COMPRAS", "COMPRA", "BUY", "BUYS", "LONG"} else "sell"
-        segment = normalized[match.end():next_start]
-        pos = re.search(r"POSICION(?:ES)?\D{0,12}(\d{1,3})\b", segment)
-        if pos:
-            value = int(pos.group(1))
-            if value <= 200:
-                segments[side] = value
-    if "buy" in segments and "sell" in segments:
-        return segments["buy"], segments["sell"]
-    return None
+    match = re.search(r"POSICION(?:ES)?\D{0,16}(\d{1,3})\b", text.upper())
+    if match:
+        value = int(match.group(1))
+        if value <= 200:
+            confidence = 0.0
+            if ocr_data:
+                matching = []
+                for word, raw in zip(ocr_data.get("text", []), ocr_data.get("conf", [])):
+                    if str(word).strip() != match.group(1):
+                        continue
+                    try:
+                        matching.append(float(raw))
+                    except (TypeError, ValueError):
+                        continue
+                confidence = max(matching, default=0.0)
+            return value, confidence
+    return None, 0.0
 
 
 class RegionSelector:
     def __init__(self, owner: "ScreenObserver", monitor_number: int,
-                 monitor: dict) -> None:
+                 monitor: dict, side: str, buy_region: dict | None = None) -> None:
         self.owner = owner
         self.monitor_number = monitor_number
+        self.monitor = monitor
+        self.side = side
+        self.buy_region = buy_region
         self.window = tk.Toplevel(owner.root)
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
@@ -223,8 +220,10 @@ class RegionSelector:
                                 cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.create_text(24, 24, anchor="nw",
-                                text=(f"Pantalla {monitor_number}: arrastra el área con COMPRAS y VENTAS"
-                                      " · Esc cancela"),
+                                text=(f"Pantalla {monitor_number}: selecciona COMPRAS"
+                                      if side == "buy" else
+                                      f"Pantalla {monitor_number}: selecciona VENTAS") +
+                                " · incluye POSICIONES y su número · Esc cancela",
                                 fill="white", font=("Segoe UI", 16, "bold"))
         self.start: tuple[int, int] | None = None
         self.rectangle = None
@@ -268,11 +267,16 @@ class RegionSelector:
         }
         self.window.destroy()
         if region["width"] < 40 or region["height"] < 25:
-            self.owner.status_var.set("Selección muy pequeña; vuelve a marcar la zona")
-            self.owner.root.deiconify()
-            self.owner.root.lift()
+            self.owner.status_var.set("Zona muy pequeña; vuelve a seleccionar ambas áreas")
+            self.owner.root.after(120, lambda: RegionSelector(
+                self.owner, self.monitor_number, self.monitor, self.side, self.buy_region))
             return
-        self.owner.set_region(region)
+        if self.side == "buy":
+            self.owner.status_var.set("Zona COMPRAS seleccionada; ahora marca VENTAS")
+            self.owner.root.after(120, lambda: RegionSelector(
+                self.owner, self.monitor_number, self.monitor, "sell", region))
+        else:
+            self.owner.set_regions({"buy": self.buy_region, "sell": region})
 
 
 class MonitorSelector:
@@ -308,7 +312,8 @@ class MonitorSelector:
     def choose(self, number: int, monitor: dict) -> None:
         self.window.grab_release()
         self.window.destroy()
-        self.owner.root.after(120, lambda: RegionSelector(self.owner, number, monitor))
+        self.owner.root.after(120, lambda: RegionSelector(
+            self.owner, number, monitor, "buy"))
 
     def cancel(self) -> None:
         try:
@@ -333,8 +338,8 @@ class ScreenObserver:
         self.root.minsize(370, 405)
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self.region = load_region()
-        self.saved_region = dict(self.region)
+        self.regions = load_regions()
+        self.saved_regions = {side: dict(region) for side, region in self.regions.items()}
         self.running = False
         self.stop_event = threading.Event()
         self.results: queue.Queue = queue.Queue(maxsize=2)
@@ -516,38 +521,39 @@ class ScreenObserver:
         return True
 
     def _region_text(self) -> str:
-        if not self.region:
-            return "Pantalla y zona: sin seleccionar"
-        r = self.region
-        saved = getattr(self, "saved_region", None)
-        marker = "" if saved is None or r == saved else " · sin guardar"
-        return (f"Pantalla {r.get('monitor', 1)} · zona x={r['left']} y={r['top']} · "
-                f"{r['width']}×{r['height']} px{marker}")
+        if not self.regions:
+            return "Pantalla y zonas: sin seleccionar"
+        buy, sell = self.regions["buy"], self.regions["sell"]
+        saved = getattr(self, "saved_regions", None)
+        marker = "" if saved is None or self.regions == saved else " · sin guardar"
+        return (f"C {buy.get('monitor', 1)}:{buy['left']},{buy['top']} "
+                f"{buy['width']}×{buy['height']} · V {sell.get('monitor', 1)}:"
+                f"{sell['left']},{sell['top']} {sell['width']}×{sell['height']}{marker}")
 
     def load_template(self) -> None:
         if self.running:
             self.status_var.set("Detén la lectura antes de cargar una plantilla")
             return
-        self.saved_region = load_region()
-        self.region = dict(self.saved_region)
+        self.saved_regions = load_regions()
+        self.regions = {side: dict(region) for side, region in self.saved_regions.items()}
         self.region_var.set(self._region_text())
-        self.status_var.set("Plantilla cargada. Inicia lectura o ajusta la zona con ZONA.")
+        self.status_var.set("Plantilla cargada. ZONA permite elegir COMPRAS y luego VENTAS.")
 
     def save_template(self) -> None:
         if self.running:
             self.status_var.set("Detén la lectura antes de guardar una plantilla")
             return
-        if not self.region:
-            self.status_var.set("Selecciona una zona antes de guardar la plantilla")
+        if not self.regions or any(side not in self.regions for side in ("buy", "sell")):
+            self.status_var.set("Selecciona ambas zonas antes de guardar la plantilla")
             return
         try:
-            save_region(self.region)
+            save_regions(self.regions)
         except OSError as exc:
             self.status_var.set(f"No se pudo guardar la plantilla: {exc}")
             return
-        self.saved_region = dict(self.region)
+        self.saved_regions = {side: dict(region) for side, region in self.regions.items()}
         self.region_var.set(self._region_text())
-        self.status_var.set("Plantilla guardada con la pantalla, posición y tamaño actuales.")
+        self.status_var.set("Plantilla guardada con las dos zonas de compra y venta.")
 
     def select_region(self) -> None:
         if self.running:
@@ -568,37 +574,40 @@ class ScreenObserver:
         self.root.withdraw()
         self.root.after(150, lambda: MonitorSelector(self, monitors))
 
-    def set_region(self, region: dict) -> None:
-        self.region = region
+    def set_regions(self, regions: dict) -> None:
+        self.regions = {side: dict(regions[side]) for side in ("buy", "sell")}
         self.region_var.set(self._region_text())
         self.root.deiconify()
         self.root.lift()
-        self.status_var.set("Zona ajustada. Pulsa GUARDAR PLANTILLA para conservarla.")
+        self.status_var.set("Zonas ajustadas. Pulsa GUARDAR PLANTILLA para conservar ambas.")
 
     def start_reading(self) -> None:
         self.capture_source = self.source_var.get()
         if self.capture_source == "monitor":
-            if self.region is None:
-                messagebox.showinfo("Selecciona una zona", "Marca primero el área que contiene COMPRAS y VENTAS.")
+            if not self.regions or any(side not in self.regions for side in ("buy", "sell")):
+                messagebox.showinfo("Selecciona las zonas", "Marca primero las zonas de COMPRAS y VENTAS.")
                 return
             if mss is None:
                 self.status_var.set("No se puede capturar: falta mss. Ejecuta setup.ps1.")
                 return
             try:
                 with mss.mss() as screen:
-                    monitor_number = int(self.region.get("monitor", 1))
                     monitors = screen.monitors[1:]
-                    if monitor_number < 1 or monitor_number > len(monitors):
-                        raise ValueError("La pantalla guardada ya no está disponible")
-                    monitor = monitors[monitor_number - 1]
-                    left, top = int(self.region["left"]), int(self.region["top"])
-                    right, bottom = left + int(self.region["width"]), top + int(self.region["height"])
-                    if (left < monitor["left"] or top < monitor["top"] or
-                            right > monitor["left"] + monitor["width"] or
-                            bottom > monitor["top"] + monitor["height"]):
-                        raise ValueError("La zona quedó fuera de la pantalla guardada")
+                    for side in ("buy", "sell"):
+                        region = self.regions[side]
+                        monitor_number = int(region.get("monitor", 1))
+                        if monitor_number < 1 or monitor_number > len(monitors):
+                            raise ValueError(f"La pantalla de {side} ya no está disponible")
+                        monitor = monitors[monitor_number - 1]
+                        left, top = int(region["left"]), int(region["top"])
+                        right = left + int(region["width"])
+                        bottom = top + int(region["height"])
+                        if (left < monitor["left"] or top < monitor["top"] or
+                                right > monitor["left"] + monitor["width"] or
+                                bottom > monitor["top"] + monitor["height"]):
+                            raise ValueError(f"La zona de {side} quedó fuera de la pantalla")
             except (ValueError, OSError) as exc:
-                self.status_var.set(f"Vuelve a elegir pantalla y zona: {exc}")
+                self.status_var.set(f"Vuelve a elegir las dos zonas: {exc}")
                 return
         elif self.chrome_server is None or not self.chrome_server.available:
             self.status_var.set("Puente Chrome no disponible; cierra otra app que use el puerto 39872")
@@ -645,12 +654,13 @@ class ScreenObserver:
     def _chrome_capture_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                image = self.chrome_frames.get(timeout=0.5)
+                frame = self.chrome_frames.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                text, counts, agreement = self._recognize_counts(image)
-                self._put_result((image, text, counts, agreement, ""))
+                images = self._split_chrome_frame(frame)
+                text, counts, agreement = self._recognize_counts(images)
+                self._put_result((self._compose_preview(images), text, counts, agreement, ""))
             except Exception as exc:
                 self._put_result((None, "", None, 0, f"Error de OCR Chrome: {exc}"))
 
@@ -659,19 +669,49 @@ class ScreenObserver:
             started = time.monotonic()
             try:
                 with mss.mss() as screen:
-                    capture_rect = {key: self.region[key]
-                                    for key in ("left", "top", "width", "height")}
-                    shot = screen.grab(capture_rect)
-                image = Image.frombytes("RGB", shot.size, shot.rgb)
-                text, counts, agreement = self._recognize_counts(image)
-                self._put_result((image, text, counts, agreement, ""))
+                    images = {}
+                    for side in ("buy", "sell"):
+                        capture_rect = {key: self.regions[side][key]
+                                        for key in ("left", "top", "width", "height")}
+                        shot = screen.grab(capture_rect)
+                        images[side] = Image.frombytes("RGB", shot.size, shot.rgb)
+                image_pair = (images["buy"], images["sell"])
+                text, counts, agreement = self._recognize_counts(image_pair)
+                self._put_result((self._compose_preview(image_pair), text, counts, agreement, ""))
             except Exception as exc:
                 self._put_result((None, "", None, 0, f"Error de captura/OCR: {exc}"))
             elapsed = time.monotonic() - started
             self.stop_event.wait(max(0.05, OCR_FRAME_INTERVAL - elapsed))
 
-    def _recognize_counts(self, image):
-        """Vote across different image/OCR settings for the fixed count panel."""
+    def _split_chrome_frame(self, frame):
+        if isinstance(frame, tuple) and len(frame) == 2:
+            return frame
+        # Compatibility for the previous extension's single combined crop:
+        # its fixed layout placed SELL on the left and BUY on the right.
+        split = max(1, frame.width // 2)
+        return (frame.crop((split, 0, frame.width, frame.height)),
+                frame.crop((0, 0, split, frame.height)))
+
+    def _compose_preview(self, images):
+        buy_image, sell_image = images
+        gap = 8
+        preview = Image.new("RGB", (buy_image.width + sell_image.width + gap,
+                                     max(buy_image.height, sell_image.height)), "#080c10")
+        preview.paste(buy_image, (0, 0))
+        preview.paste(sell_image, (buy_image.width + gap, 0))
+        return preview
+
+    def _recognize_counts(self, images):
+        """Read BUY and SELL independently, so either title may be obscured."""
+        buy_diagnostics, buy_count, buy_agreement = self._recognize_side_count(images[0])
+        sell_diagnostics, sell_count, sell_agreement = self._recognize_side_count(images[1])
+        diagnostics = f"COMPRAS[{buy_diagnostics}] · VENTAS[{sell_diagnostics}]"
+        if buy_count is None or sell_count is None:
+            return diagnostics, None, min(buy_agreement, sell_agreement)
+        return diagnostics, (buy_count, sell_count), min(buy_agreement, sell_agreement)
+
+    def _recognize_side_count(self, image):
+        """Vote across preprocessing variants for one known side's position count."""
         gray = ImageOps.autocontrast(ImageOps.grayscale(image))
         local_mean = gray.filter(ImageFilter.BoxBlur(radius=4))
         adaptive = ImageChops.subtract(gray, local_mean, offset=128).point(
@@ -682,8 +722,8 @@ class ScreenObserver:
             ("adaptativo", adaptive, 6),
             ("detalle", sharpened, 11),
         )
-        votes: dict[tuple[int, int], int] = {}
-        confidences: dict[tuple[int, int], list[float]] = {}
+        votes: dict[int, int] = {}
+        confidences: dict[int, list[float]] = {}
         diagnostics = []
         resampling = getattr(Image, "Resampling", Image).LANCZOS
         for name, variant, psm in variants:
@@ -693,20 +733,8 @@ class ScreenObserver:
             data = pytesseract.image_to_data(
                 enlarged, config=f"--oem 3 --psm {psm}", lang="eng",
                 output_type=pytesseract.Output.DICT)
-            words = [str(word).strip() for word in data["text"] if str(word).strip()]
-            recognized = parse_counts(" ".join(words), data)
-            digit_confidences = []
-            for word, raw_confidence in zip(data["text"], data.get("conf", [])):
-                word = str(word).strip()
-                if not re.fullmatch(r"\d{1,3}", word) or int(word) > 200:
-                    continue
-                try:
-                    confidence = float(raw_confidence)
-                except (TypeError, ValueError):
-                    continue
-                if confidence >= 0:
-                    digit_confidences.append(confidence)
-            digit_confidence = min(digit_confidences) if digit_confidences else 0.0
+            text = " ".join(str(word).strip() for word in data["text"] if str(word).strip())
+            recognized, digit_confidence = parse_side_count(text, data)
             shown = recognized if recognized is not None else "?"
             diagnostics.append(f"{name}={shown} ({digit_confidence:.0f}%)")
             if recognized is not None:
@@ -718,8 +746,6 @@ class ScreenObserver:
         if agreement >= 2:
             return " · ".join(diagnostics), consensus, agreement
 
-        # If only one image pipeline can read a small/pixelated counter, allow it
-        # only with a credible digit score and a longer temporal confirmation.
         if len(votes) == 1 and agreement == 1:
             score = confidences[consensus][0]
             if score >= OCR_SINGLE_VARIANT_MIN_CONFIDENCE:

@@ -12,12 +12,13 @@ function setStatus(text, error = false) {
 }
 
 async function loadSettings() {
-  const saved = await chrome.storage.local.get(["endpoint", "token", "running", "lastError", "crop", "cropTabTitle"]);
+  const saved = await chrome.storage.local.get(["endpoint", "token", "running", "lastError",
+    "buyCrop", "sellCrop", "cropTabTitle"]);
   endpoint.value = saved.endpoint || "http://127.0.0.1:39872/frame";
   token.value = saved.token || "";
-  cropStatus.textContent = saved.crop
-    ? `Zona guardada: ${saved.cropTabTitle || "pestaña"} · ${Math.round(saved.crop.width * 100)}% × ${Math.round(saved.crop.height * 100)}%`
-    : "Zona: no seleccionada";
+  cropStatus.textContent = saved.buyCrop && saved.sellCrop
+    ? `COMPRAS ${Math.round(saved.buyCrop.width * 100)}%×${Math.round(saved.buyCrop.height * 100)}% · VENTAS ${Math.round(saved.sellCrop.width * 100)}%×${Math.round(saved.sellCrop.height * 100)}% · ${saved.cropTabTitle || "pestaña"}`
+    : "Zonas COMPRAS/VENTAS: no seleccionadas";
   if (saved.lastError) setStatus(saved.lastError, true);
   else if (saved.running) setStatus("Capturando la pestaña autorizada");
 }
@@ -29,8 +30,8 @@ selectButton.addEventListener("click", async () => {
       throw new Error("Activa primero la pestaña del directo.");
     }
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["select_region.js"] });
-    cropStatus.textContent = "Arrastra en la pestaña la zona de ambos contadores.";
-    setStatus("Selecciona el recuadro en la página; el popup puede cerrarse.");
+    cropStatus.textContent = "Selecciona COMPRAS y después VENTAS.";
+    setStatus("Marca cada zona por separado en la página.");
   } catch (error) {
     setStatus(String(error.message || error), true);
   }
@@ -54,9 +55,9 @@ startButton.addEventListener("click", async () => {
     if (!tab?.id || !/^https?:/i.test(tab.url || "")) {
       throw new Error("Activa primero la pestaña del directo.");
     }
-    const saved = await chrome.storage.local.get(["crop", "cropTabId"]);
-    if (!saved.crop || saved.cropTabId !== tab.id) {
-      throw new Error("Selecciona primero la zona en esta pestaña.");
+    const saved = await chrome.storage.local.get(["buyCrop", "sellCrop", "cropTabId"]);
+    if (!saved.buyCrop || !saved.sellCrop || saved.cropTabId !== tab.id) {
+      throw new Error("Selecciona primero las zonas COMPRAS y VENTAS en esta pestaña.");
     }
     // Request the stream immediately from the popup click handler so Chrome
     // still recognizes the user gesture required by tabCapture.
@@ -65,7 +66,7 @@ startButton.addEventListener("click", async () => {
     if (!prepared?.ok) throw new Error(prepared?.error || "No se pudo preparar la captura.");
     const result = await chrome.runtime.sendMessage({
       type: "START_CAPTURE", streamId, endpoint: settings.endpoint,
-      token: settings.token, crop: saved.crop
+      token: settings.token, regions: { buy: saved.buyCrop, sell: saved.sellCrop }
     });
     if (!result?.ok) throw new Error(result?.error || "No se pudo iniciar el flujo de video.");
     await chrome.storage.local.set({ running: true, lastError: "" });

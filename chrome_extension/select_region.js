@@ -4,13 +4,24 @@
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(3,10,16,.22);cursor:crosshair;touch-action:none";
   const banner = document.createElement("div");
-  banner.textContent = "OroCopy: arrastra el área con COMPRAS, VENTAS y sus posiciones · Esc cancela";
   banner.style.cssText = "position:absolute;top:12px;left:50%;transform:translateX(-50%);padding:9px 14px;border-radius:6px;background:#10151b;color:#fff;font:600 14px Segoe UI,sans-serif;box-shadow:0 2px 12px #0008;white-space:nowrap";
   const box = document.createElement("div");
   box.style.cssText = "position:absolute;border:2px solid #57d99a;background:rgba(87,217,154,.16);display:none;pointer-events:none";
   overlay.append(banner, box);
   document.documentElement.appendChild(overlay);
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const crops = {};
+  let side = "buy";
   let start = null;
+  const updateBanner = () => {
+    banner.textContent = side === "buy"
+      ? "OroCopy 1/2: arrastra la zona COMPRAS (incluye POSICIONES y su número) · Esc cancela"
+      : "OroCopy 2/2: arrastra la zona VENTAS (incluye POSICIONES y su número) · Esc cancela";
+  };
+  updateBanner();
+
   const cleanup = () => {
     overlay.remove();
     window.removeEventListener("keydown", onKey, true);
@@ -43,17 +54,28 @@
     if (!start) return;
     const left = Math.min(start.x, event.clientX), top = Math.min(start.y, event.clientY);
     const width = Math.abs(event.clientX - start.x), height = Math.abs(event.clientY - start.y);
-    const viewportWidth = window.innerWidth, viewportHeight = window.innerHeight;
-    cleanup();
+    start = null;
     if (width < 30 || height < 16) {
-      chrome.runtime.sendMessage({ type: "REGION_CANCELLED" });
+      banner.textContent = "Zona muy pequeña; vuelve a arrastrar e incluye POSICIONES con su número";
+      box.style.display = "none";
+      setTimeout(updateBanner, 1600);
       return;
     }
+    crops[side] = {
+      x: left / viewportWidth, y: top / viewportHeight,
+      width: width / viewportWidth, height: height / viewportHeight
+    };
+    if (side === "buy") {
+      side = "sell";
+      updateBanner();
+      box.style.display = "none";
+      return;
+    }
+    cleanup();
     chrome.runtime.sendMessage({
-      type: "REGION_SELECTED",
+      type: "REGIONS_SELECTED",
       title: document.title,
-      crop: { x: left / viewportWidth, y: top / viewportHeight,
-              width: width / viewportWidth, height: height / viewportHeight }
+      regions: crops
     });
   });
 })();

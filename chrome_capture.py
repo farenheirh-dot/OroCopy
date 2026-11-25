@@ -97,7 +97,30 @@ class ChromeCaptureServer:
                         return
                     source.verify()
                     image = Image.open(BytesIO(raw)).convert("RGB")
-                    accepted = owner.on_frame(image)
+                    dimensions = {}
+                    for side in ("Buy", "Sell"):
+                        for dimension in ("Width", "Height"):
+                            header = self.headers.get(f"X-OroCopy-{side}-{dimension}")
+                            if header is not None:
+                                dimensions[f"{side.lower()}_{dimension.lower()}"] = int(header)
+                    if len(dimensions) == 4:
+                        buy_width = dimensions["buy_width"]
+                        buy_height = dimensions["buy_height"]
+                        sell_width = dimensions["sell_width"]
+                        sell_height = dimensions["sell_height"]
+                        if (min(buy_width, buy_height, sell_width, sell_height) < 1 or
+                                buy_width + sell_width > image.width or
+                                max(buy_height, sell_height) > image.height):
+                            self.send_error(400, "Crop dimensions are invalid")
+                            return
+                        frames = (
+                            image.crop((0, 0, buy_width, buy_height)),
+                            image.crop((buy_width, 0, buy_width + sell_width, sell_height)),
+                        )
+                        accepted = owner.on_frame(frames)
+                    else:
+                        # Older extension versions still send one combined crop.
+                        accepted = owner.on_frame(image)
                 except Exception:
                     self.send_error(400, "Invalid image frame")
                     return
